@@ -1,5 +1,5 @@
 # ============================================================
-# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS OTIMIZADO
+# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS (CORRIGIDO)
 # ============================================================
 
 import discord
@@ -19,7 +19,7 @@ from database import (
 )
 
 class MatchSystem:
-    """Sistema de partidas RANKED/APOSTADO OTIMIZADO"""
+    """Sistema de partidas RANKED/APOSTADO"""
     
     def __init__(self, db, config, bot):
         self.db = db
@@ -33,32 +33,36 @@ class MatchSystem:
             "2v2": {"max_players": 4, "teams": True},
             "3v3": {"max_players": 6, "teams": True}
         }
-        
-        # Inicia task de limpeza
-        if self.bot:
-            self.bot.loop.create_task(self._cleanup_loop())
+
+    def start_cleanup_task(self):
+        """Inicia a task de limpeza (chamado após o bot estar pronto)"""
+        if self.bot and not self._cleanup_task:
+            self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
     async def _cleanup_loop(self):
         """Limpa lobbies expirados periodicamente"""
         while True:
-            await asyncio.sleep(300)  # 5 minutos
-            now = datetime.utcnow()
-            to_remove = []
-            
-            for match_id, lobby in self.active_lobbies.items():
-                if lobby['status'] == 'waiting':
-                    created = lobby.get('created_at', now)
-                    if (now - created).seconds > 600:  # 10 minutos
-                        to_remove.append(match_id)
-            
-            for match_id in to_remove:
-                await self.cancel_match(match_id)
+            try:
+                await asyncio.sleep(300)  # 5 minutos
+                now = datetime.utcnow()
+                to_remove = []
+                
+                for match_id, lobby in self.active_lobbies.items():
+                    if lobby.get('status') == 'waiting':
+                        created = lobby.get('created_at', now)
+                        if (now - created).seconds > 600:  # 10 minutos
+                            to_remove.append(match_id)
+                
+                for match_id in to_remove:
+                    await self.cancel_match(match_id)
+            except Exception as e:
+                print(f"⚠️ Erro na limpeza: {e}")
 
     async def create_lobby(self, guild_id: str, channel_id: str, author_id: str,
                           match_type: str, map_name: str, is_betting: bool = False,
                           bet_amount: int = 0, team1_name: str = "Time 1", 
                           team2_name: str = "Time 2") -> Dict:
-        """Cria lobby de partida (OTIMIZADO)"""
+        """Cria lobby de partida"""
         settings = get_guild_settings(guild_id)
         
         # Verificações rápidas
@@ -132,7 +136,7 @@ class MatchSystem:
         return {"match_id": match_id, "success": True}
 
     async def _announce_match(self, channel_id: str, match_id: str, match_data: Dict):
-        """Anuncia partida criada (OTIMIZADO)"""
+        """Anuncia partida criada"""
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
             return
@@ -161,7 +165,7 @@ class MatchSystem:
         await channel.send(embed=embed)
 
     async def join_lobby(self, match_id: str, user_id: str, team: Optional[str] = None) -> Dict:
-        """Entra no lobby (OTIMIZADO)"""
+        """Entra no lobby"""
         # Buscar match
         lobby = None
         full_match_id = None
@@ -259,7 +263,7 @@ class MatchSystem:
         await self._notify_players(match_data, lobby, settings)
 
     async def _create_ticket(self, match_data: Dict, lobby: Dict, settings: Dict) -> Optional[str]:
-        """Cria ticket (canal privado) OTIMIZADO"""
+        """Cria ticket (canal privado)"""
         guild = self.bot.get_guild(int(match_data["guild_id"]))
         if not guild:
             return None
@@ -335,7 +339,7 @@ class MatchSystem:
         return create_ticket(ticket_data)
 
     async def _create_ticket_embed(self, match_data: Dict, lobby: Dict, settings: Dict) -> discord.Embed:
-        """Cria embed do ticket OTIMIZADO"""
+        """Cria embed do ticket"""
         categoria = "💰 APOSTADO" if lobby["is_betting"] else "🏆 RANKED"
         bet_amount = lobby.get("bet_amount", 0)
         
@@ -376,7 +380,7 @@ class MatchSystem:
         return embed
 
     async def _notify_players(self, match_data: Dict, lobby: Dict, settings: Dict):
-        """Notifica jogadores OTIMIZADO"""
+        """Notifica jogadores"""
         if not settings.get("customization", {}).get("dm_notifications", True):
             return
         
@@ -394,7 +398,7 @@ class MatchSystem:
                 pass
 
     async def cancel_match(self, match_id: str) -> bool:
-        """Cancela partida e devolve valores OTIMIZADO"""
+        """Cancela partida e devolve valores"""
         lobby = self.active_lobbies.get(match_id)
         if not lobby:
             return False
@@ -427,7 +431,7 @@ class MatchSystem:
         return True
 
     def get_match_info(self, match_id: str) -> Optional[Dict]:
-        """Obtém informações de uma partida OTIMIZADO"""
+        """Obtém informações de uma partida"""
         for mid, lobby in self.active_lobbies.items():
             if mid.startswith(match_id):
                 return lobby
@@ -435,8 +439,8 @@ class MatchSystem:
 
     def get_cache_stats(self) -> Dict:
         """Retorna estatísticas dos lobbies ativos"""
-        waiting = sum(1 for l in self.active_lobbies.values() if l['status'] == 'waiting')
-        started = sum(1 for l in self.active_lobbies.values() if l['status'] == 'started')
+        waiting = sum(1 for l in self.active_lobbies.values() if l.get('status') == 'waiting')
+        started = sum(1 for l in self.active_lobbies.values() if l.get('status') == 'started')
         
         return {
             "total": len(self.active_lobbies),
@@ -445,8 +449,12 @@ class MatchSystem:
             "betting": sum(1 for l in self.active_lobbies.values() if l.get('is_betting', False))
         }
 
+# ============================================================
+# MEDIATOR VIEW
+# ============================================================
+
 class MediatorView(View):
-    """View com botões para mediador OTIMIZADO"""
+    """View com botões para mediador"""
     
     def __init__(self, db, match_id: str, match_type: str, is_betting: bool, config, bot):
         super().__init__(timeout=None)
@@ -474,7 +482,7 @@ class MediatorView(View):
         await self._cancel_match(interaction)
 
     async def _declare_winner(self, interaction: discord.Interaction, winner: Optional[str]):
-        """Declara vencedor e processa resultados OTIMIZADO"""
+        """Declara vencedor e processa resultados"""
         from database import get_guild_settings, get_match, add_player_balance, remove_player_balance, update_player_stats
         
         # Verificar se é mediador
@@ -582,7 +590,7 @@ class MediatorView(View):
                 pass
 
     async def _cancel_match(self, interaction: discord.Interaction):
-        """Cancela partida via ticket OTIMIZADO"""
+        """Cancela partida via ticket"""
         if not is_mediator(interaction.user):
             await interaction.response.send_message("❌ Você não é mediador!", ephemeral=True)
             return
