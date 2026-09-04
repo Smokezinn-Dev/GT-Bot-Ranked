@@ -1,5 +1,6 @@
 # ============================================================
 # MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS COM FILAS
+# CORRIGIDO - SEM LOOP NO __INIT__
 # ============================================================
 
 import discord
@@ -19,34 +20,36 @@ from database import (
 )
 
 class MatchSystem:
-    """Sistema de partidas com FILAS e MATCHMAKING"""
+    """Sistema de partidas RANKED/APOSTADO com FILAS"""
     
     def __init__(self, db, config, bot):
         self.db = db
         self.config = config
         self.bot = bot
         self.active_lobbies = {}
+        self._cleanup_task = None
+        self._matchmaking_task = None
+        
         self.queues = {
             "1v1": {"players": [], "min": 2, "max": 2},
             "2v2": {"players": [], "min": 4, "max": 4},
             "3v3": {"players": [], "min": 6, "max": 6}
         }
-        self._cleanup_task = None
         
         self.match_types = {
             "1v1": {"max_players": 2, "teams": False, "min_players": 2},
             "2v2": {"max_players": 4, "teams": True, "min_players": 4},
             "3v3": {"max_players": 6, "teams": True, "min_players": 6}
         }
-        
-        # Inicia task de matchmaking
-        if self.bot:
-            self.bot.loop.create_task(self._matchmaking_loop())
 
-    def start_cleanup_task(self):
-        """Inicia a task de limpeza"""
-        if self.bot and not self._cleanup_task:
-            self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
+    def start_tasks(self):
+        """Inicia as tasks de background (chamado no on_ready)"""
+        if self.bot:
+            if not self._cleanup_task:
+                self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
+            if not self._matchmaking_task:
+                self._matchmaking_task = self.bot.loop.create_task(self._matchmaking_loop())
+            print("✅ Tasks de matchmaking e limpeza iniciadas!")
 
     async def _matchmaking_loop(self):
         """Loop principal de matchmaking - verifica filas automaticamente"""
@@ -58,22 +61,22 @@ class MatchSystem:
                     players = queue_data["players"]
                     min_players = self.match_types[match_type]["min_players"]
                     
-                    # Se tiver jogadores suficientes, cria partida
                     if len(players) >= min_players:
-                        # Pega os jogadores da fila
                         selected = players[:min_players]
-                        
-                        # Remove da fila
                         for player in selected:
                             players.remove(player)
                         
-                        # Cria partida
-                        await self._create_match_from_queue(
-                            match_type, 
-                            selected,
-                            guild_id=self.bot.guilds[0].id if self.bot.guilds else None
-                        )
+                        guild_id = None
+                        if self.bot and self.bot.guilds:
+                            guild_id = str(self.bot.guilds[0].id)
                         
+                        if guild_id:
+                            await self._create_match_from_queue(
+                                match_type, 
+                                selected,
+                                guild_id
+                            )
+                            
             except Exception as e:
                 print(f"⚠️ Erro no matchmaking: {e}")
 
@@ -84,7 +87,6 @@ class MatchSystem:
         
         settings = get_guild_settings(guild_id)
         
-        # Define times automaticamente
         teams = {}
         team_names = {}
         
@@ -92,7 +94,6 @@ class MatchSystem:
             teams = {players[0]: "team1", players[1]: "team2"}
             team_names = {"team1": "Jogador 1", "team2": "Jogador 2"}
         else:
-            # Divide em times iguais
             half = len(players) // 2
             for i, player in enumerate(players[:half]):
                 teams[player] = "team1"
@@ -100,14 +101,25 @@ class MatchSystem:
                 teams[player] = "team2"
             team_names = {"team1": "Time 1", "team2": "Time 2"}
         
-        # Mapa aleatório
         maps = settings.get("ranked", {}).get("maps", ["Arena", "Castelo", "Floresta", "Deserto", "Vulcão"])
         map_name = random.choice(maps)
         
-        # Criar partida
+        # Verificar se tem canal para anunciar
+        channel_id = None
+        if self.bot and self.bot.guilds:
+            guild = self.bot.get_guild(int(guild_id))
+            if guild:
+                for ch in guild.text_channels:
+                    if ch.permissions_for(guild.me).send_messages:
+                        channel_id = str(ch.id)
+                        break
+        
+        if not channel_id:
+            channel_id = "0"
+        
         match_data = {
             "guild_id": guild_id,
-            "channel_id": str(self.bot.guilds[0].get_channel(0).id) if self.bot.guilds else "0",
+            "channel_id": channel_id,
             "creator_id": players[0],
             "match_type": match_type,
             "map": map_name,
@@ -122,7 +134,6 @@ class MatchSystem:
         
         match_id = create_match(match_data, False)
         
-        # Armazenar lobby
         self.active_lobbies[match_id] = {
             "id": match_id,
             "players": players,
@@ -135,7 +146,6 @@ class MatchSystem:
             "from_queue": True
         }
         
-        # Anunciar e iniciar
         await self._announce_match_from_queue(match_id, match_data, players)
         await self._start_match(match_id)
 
@@ -145,10 +155,8 @@ class MatchSystem:
         if not guild:
             return
         
-        # Anuncia no canal geral
         channel = self.bot.get_channel(int(match_data["channel_id"]))
         if not channel:
-            # Pega o primeiro canal de texto
             for ch in guild.text_channels:
                 if ch.permissions_for(guild.me).send_messages:
                     channel = ch
@@ -167,7 +175,6 @@ class MatchSystem:
             timestamp=datetime.utcnow()
         )
         
-        # Mostra jogadores
         if match_data["match_type"] == "1v1":
             embed.add_field(
                 name="👥 Jogadores",
@@ -199,7 +206,6 @@ class MatchSystem:
         
         await channel.send(embed=embed)
         
-        # Notifica os jogadores
         for player_id in players:
             try:
                 user = await self.bot.fetch_user(int(player_id))
@@ -217,20 +223,16 @@ class MatchSystem:
         if match_type not in self.queues:
             return {"error": f"❌ Tipos: 1v1, 2v2, 3v3"}
         
-        # Verifica se já está em outra fila
         for q_type, q_data in self.queues.items():
             if user_id in q_data["players"]:
                 return {"error": f"❌ Você já está na fila de {q_type}!"}
         
-        # Verifica se está em uma partida
         for lobby in self.active_lobbies.values():
             if user_id in lobby["players"] and lobby["status"] == "waiting":
                 return {"error": "❌ Você já está em uma partida!"}
         
-        # Adiciona à fila
         self.queues[match_type]["players"].append(user_id)
         
-        # Verifica se já tem jogadores suficientes (matchmaking vai pegar)
         return {"success": True, "match_type": match_type, "position": len(self.queues[match_type]["players"])}
 
     async def remove_from_queue(self, guild_id: str, user_id: str) -> Dict:
@@ -258,14 +260,10 @@ class MatchSystem:
                 "min": min_players,
                 "max": max_players,
                 "ready": len(players) >= min_players,
-                "players": players[:10]  # Mostra apenas os 10 primeiros
+                "players": players[:10]
             }
         
         return status
-
-    # ============================================================
-    # MÉTODOS EXISTENTES (MANTIDOS)
-    # ============================================================
 
     async def _cleanup_loop(self):
         """Limpa lobbies expirados"""
@@ -605,7 +603,7 @@ class MatchSystem:
                 pass
 
     async def cancel_match(self, match_id: str) -> bool:
-        """Cancela partida"""
+        """Cancela partida e devolve valores"""
         lobby = self.active_lobbies.get(match_id)
         if not lobby:
             return False
