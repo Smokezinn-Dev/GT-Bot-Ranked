@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - SISTEMA RANKED/APOSTADO (GT BOT RANKED)
+# MAIN.PY - SISTEMA RANKED/APOSTADO (CORRIGIDO)
 # ============================================================
 
 import discord
@@ -9,7 +9,21 @@ import logging
 import sys
 from datetime import datetime
 
-from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
+# ============================================================
+# IMPORTAÇÕES CORRIGIDAS
+# ============================================================
+
+try:
+    from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER, MATCH_TYPES, MONGODB_URL
+except ImportError as e:
+    print(f"❌ Erro ao importar config: {e}")
+    print("🔧 Usando valores padrão...")
+    DISCORD_TOKEN = "SEU_TOKEN_AQUI"
+    EMBED_COLOR = 0x00ff00
+    EMBED_FOOTER = "Rank System v3.0"
+    MATCH_TYPES = ["1v1", "2v2", "3v3"]
+    MONGODB_URL = "mongodb+srv://gleicyferreira899_db_user:Q57eSQXyzUoWQxw4@cluster0.xhwrpcd.mongodb.net/?appName=Cluster0"
+
 from database import init_db
 from match_system import MatchSystem
 from ranking_system import RankingSystem
@@ -41,6 +55,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # INICIALIZAÇÃO DOS SISTEMAS
 # ============================================================
 
+print("🚀 Inicializando sistemas...")
 db = init_db()
 match_system = MatchSystem(db, None, bot)
 ranking_system = RankingSystem(db, None, bot)
@@ -53,7 +68,7 @@ admin_commands = AdminCommands(bot, db, None, match_system, ranking_system)
 @bot.event
 async def on_ready():
     print("="*60)
-    print(f"✅ RANK BOT CONECTADO: {bot.user}")
+    print(f"✅ BOT CONECTADO: {bot.user}")
     print(f"📡 ID: {bot.user.id}")
     print(f"📊 SERVIDORES: {len(bot.guilds)}")
     print("="*60)
@@ -104,25 +119,23 @@ async def help_cmd(ctx):
         inline=False
     )
     
-    embed.add_field(
-        name="🔧 COMANDOS ADMIN",
-        value=(
-            "`!ranked <tipo> [mapa]` - Criar partida RANKED\n"
-            "`!apostado <tipo> <aposta> [mapa]` - Criar APOSTADO\n"
-            "`!config` - Ver configurações\n"
-            "`!setconfig <chave> <valor>` - Configurar\n"
-            "`!setranked <opção> <valor>` - Configurar RANKED\n"
-            "`!setbetting <opção> <valor>` - Configurar APOSTADO\n"
-            "`!setprizes <posição> <valor>` - Prêmios\n"
-            "`!distributetop [tipo]` - Distribuir prêmios\n"
-            "`!ecogive/remove/set @user <valor>` - Economia\n"
-            "`!setmediator @cargo` - Definir cargo mediador\n"
-            "`!addwins @user <quantidade> [tipo]` - Adicionar vitórias\n"
-            "`!removewins @user <quantidade> [tipo]` - Remover vitórias\n"
-            "`!setwins @user <quantidade> [tipo]` - Definir vitórias"
-        ),
-        inline=False
-    )
+    if ctx.author.guild_permissions.administrator:
+        embed.add_field(
+            name="🔧 COMANDOS ADMIN",
+            value=(
+                "`!ranked <tipo> [mapa]` - Criar partida RANKED\n"
+                "`!apostado <tipo> <aposta> [mapa]` - Criar APOSTADO\n"
+                "`!config` - Ver configurações\n"
+                "`!setconfig <chave> <valor>` - Configurar\n"
+                "`!setmediator @cargo` - Definir cargo mediador\n"
+                "`!addwins @user <quantidade> [tipo]` - Adicionar vitórias\n"
+                "`!removewins @user <quantidade> [tipo]` - Remover vitórias\n"
+                "`!setwins @user <quantidade> [tipo]` - Definir vitórias\n"
+                "`!distributetop [tipo]` - Distribuir prêmios\n"
+                "`!ecogive/remove/set @user <valor>` - Economia"
+            ),
+            inline=False
+        )
     
     embed.set_footer(text=EMBED_FOOTER)
     await ctx.send(embed=embed)
