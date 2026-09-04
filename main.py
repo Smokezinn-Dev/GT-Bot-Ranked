@@ -8,23 +8,23 @@ import asyncio
 import logging
 import sys
 import gc
-import time
+import os
 from datetime import datetime
 
-try:
-    from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
-except ImportError:
-    DISCORD_TOKEN = "MTU0NTM5NDAzMjQyMTYzNDA4MQ.G50Z0a.Dc-PkgeAOQgpHYK4zhYph_VkuiEyUdtbIBlf7k"
-    EMBED_COLOR = 0x00ff00
-    EMBED_FOOTER = "Rank System v3.0"
-
+from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
 from database import init_db
 from match_system import MatchSystem
 from ranking_system import RankingSystem
 from admin_commands import AdminCommands
 
 # ============================================================
-# LOGGING MÍNIMO
+# CONFIGURAÇÃO DO PREFIXO
+# ============================================================
+
+BOT_PREFIX = "%"  # <--- MUDE PARA O PREFIXO QUE QUISER
+
+# ============================================================
+# LOGGING
 # ============================================================
 
 logging.basicConfig(level=logging.WARNING)
@@ -43,13 +43,14 @@ intents.guilds = True
 # BOT
 # ============================================================
 
-bot = commands.Bot(command_prefix="%", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=BOT_PREFIX, intents=intents, help_command=None)
 
 # ============================================================
 # INICIALIZAÇÃO
 # ============================================================
 
 print("🚀 Inicializando sistemas...")
+print(f"🔧 Prefixo: {BOT_PREFIX}")
 db = init_db()
 match_system = MatchSystem(db, None, bot)
 ranking_system = RankingSystem(db, None, bot)
@@ -65,19 +66,19 @@ async def on_ready():
     print(f"✅ BOT CONECTADO: {bot.user}")
     print(f"📡 ID: {bot.user.id}")
     print(f"📊 SERVIDORES: {len(bot.guilds)}")
+    print(f"🔧 Prefixo: {BOT_PREFIX}")
     print("="*60)
     
-    # Inicia a task de limpeza do match_system
-    match_system.start_cleanup_task()
+    # INICIA AS TASKS DE BACKGROUND
+    match_system.start_tasks()
     
     await ranking_system.initialize_rankings()
-    
     gc.collect()
     
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.playing,
-            name=f"!help | {len(bot.guilds)} servidores"
+            name=f"{BOT_PREFIX}help | {len(bot.guilds)} servidores"
         )
     )
     
@@ -101,8 +102,8 @@ async def on_command_error(ctx, error):
 @bot.command(name="help")
 async def help_cmd(ctx):
     embed = discord.Embed(
-        title="🎯 RANK BOT - HELP",
-        description="Sistema de RANKED e APOSTADO",
+        title=f"🎯 RANK BOT - HELP",
+        description=f"Sistema de RANKED e APOSTADO\n**Prefixo:** `{BOT_PREFIX}`",
         color=EMBED_COLOR,
         timestamp=datetime.utcnow()
     )
@@ -110,10 +111,14 @@ async def help_cmd(ctx):
     embed.add_field(
         name="📊 COMANDOS PÚBLICOS",
         value=(
-            "`!rank [1v1|2v2|3v3]` - Ver ranking\n"
-            "`!myrank [1v1|2v2|3v3]` - Suas estatísticas\n"
-            "`!matches` - Partidas ativas\n"
-            "`!join <ID> [team1|team2]` - Entrar na partida"
+            f"`{BOT_PREFIX}rank [1v1|2v2|3v3]` - Ver ranking\n"
+            f"`{BOT_PREFIX}myrank [1v1|2v2|3v3]` - Suas estatísticas\n"
+            f"`{BOT_PREFIX}matches` - Partidas ativas\n"
+            f"`{BOT_PREFIX}queue [1v1|2v2|3v3]` - Entrar na fila\n"
+            f"`{BOT_PREFIX}queue status` - Status das filas\n"
+            f"`{BOT_PREFIX}queue list` - Listar jogadores na fila\n"
+            f"`{BOT_PREFIX}leave` - Sair da fila\n"
+            f"`{BOT_PREFIX}join <ID> [team1|team2]` - Entrar na partida"
         ),
         inline=False
     )
@@ -122,16 +127,18 @@ async def help_cmd(ctx):
         embed.add_field(
             name="🔧 COMANDOS ADMIN",
             value=(
-                "`!ranked <tipo> [mapa]` - Criar partida RANKED\n"
-                "`!apostado <tipo> <aposta> [mapa]` - Criar APOSTADO\n"
-                "`!config` - Ver configurações\n"
-                "`!setconfig <chave> <valor>` - Configurar\n"
-                "`!setmediator @cargo` - Definir cargo mediador\n"
-                "`!addwins @user <quantidade> [tipo]` - Adicionar vitórias\n"
-                "`!removewins @user <quantidade> [tipo]` - Remover vitórias\n"
-                "`!setwins @user <quantidade> [tipo]` - Definir vitórias\n"
-                "`!distributetop [tipo]` - Distribuir prêmios\n"
-                "`!ecogive/remove/set @user <valor>` - Economia"
+                f"`{BOT_PREFIX}ranked <tipo> [mapa]` - Criar partida RANKED\n"
+                f"`{BOT_PREFIX}apostado <tipo> <aposta> [mapa]` - Criar APOSTADO\n"
+                f"`{BOT_PREFIX}config` - Ver configurações\n"
+                f"`{BOT_PREFIX}setconfig <chave> <valor>` - Configurar\n"
+                f"`{BOT_PREFIX}setmediator @cargo` - Definir cargo mediador\n"
+                f"`{BOT_PREFIX}addwins @user <quantidade> [tipo]` - Adicionar vitórias\n"
+                f"`{BOT_PREFIX}removewins @user <quantidade> [tipo]` - Remover vitórias\n"
+                f"`{BOT_PREFIX}setwins @user <quantidade> [tipo]` - Definir vitórias\n"
+                f"`{BOT_PREFIX}distributetop [tipo]` - Distribuir prêmios\n"
+                f"`{BOT_PREFIX}ecogive/remove/set @user <valor>` - Economia\n"
+                f"`{BOT_PREFIX}queueadmin clear <tipo>` - Limpar fila\n"
+                f"`{BOT_PREFIX}queueadmin remove @user` - Remover da fila"
             ),
             inline=False
         )
@@ -153,7 +160,7 @@ async def load_commands():
 
 async def main():
     try:
-        print("🚀 INICIANDO RANK BOT...")
+        print(f"🚀 INICIANDO RANK BOT (prefixo: {BOT_PREFIX})...")
         await load_commands()
         await bot.start(DISCORD_TOKEN)
     except discord.LoginFailure:
