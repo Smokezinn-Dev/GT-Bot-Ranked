@@ -4,7 +4,7 @@
 # ============================================================
 
 import os
-import discord  # <--- ADICIONADO
+import discord
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 import time
@@ -82,6 +82,7 @@ economy_purchases = db["economy_purchases"]
 
 # ===== RANK SYSTEM =====
 guild_settings = db["guild_settings"]
+server_configs = db["server_configs"]  # <--- ADICIONADO
 players = db["players"]
 matches = db["matches"]
 betting_matches = db["betting_matches"]
@@ -296,7 +297,6 @@ def update_player_stats(guild_id: str, user_id: str, match_type: str, result: st
     """Atualiza estatísticas de um jogador"""
     player = get_player_stats(guild_id, user_id)
     
-    # Atualiza estatísticas por tipo
     if match_type in player["stats"]:
         if result == "win":
             player["stats"][match_type]["wins"] += 1
@@ -309,7 +309,6 @@ def update_player_stats(guild_id: str, user_id: str, match_type: str, result: st
             player["total_losses"] += 1
             player["current_streak"] = min(-1, player["current_streak"] - 1)
     
-    # Atualiza estatísticas de time
     if team_name:
         if result == "win":
             player["team_stats"]["wins"] += 1
@@ -553,7 +552,6 @@ def distribute_top_prizes(guild_id: str, match_type: str) -> Dict:
                 "amount": amount
             }
     
-    # Registrar distribuição
     top_prizes.insert_one({
         "guild_id": guild_id,
         "match_type": match_type,
@@ -562,7 +560,6 @@ def distribute_top_prizes(guild_id: str, match_type: str) -> Dict:
         "prizes": distributed
     })
     
-    # Atualizar última distribuição
     update_guild_settings(
         guild_id,
         "top_prizes.last_distribution",
@@ -603,13 +600,11 @@ def cleanup_expired_matches(hours: int = 24) -> int:
     """Remove partidas expiradas"""
     cutoff = datetime.utcnow() - timedelta(hours=hours)
     
-    # Partidas RANKED expiradas
     result1 = matches.delete_many({
         "status": "waiting",
         "created_at": {"$lt": cutoff}
     })
     
-    # Partidas APOSTADO expiradas
     result2 = betting_matches.delete_many({
         "status": "waiting",
         "created_at": {"$lt": cutoff}
