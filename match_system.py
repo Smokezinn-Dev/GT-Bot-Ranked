@@ -1,11 +1,11 @@
 # ============================================================
-# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS RANKED/APOSTADO
+# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS OTIMIZADO
 # ============================================================
 
 import discord
 from discord.ui import Button, View
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import random
 from typing import Dict, List, Optional
 
@@ -15,37 +15,56 @@ from database import (
     get_match, update_match, create_match,
     get_player_stats, update_player_stats,
     create_ticket, get_ticket, close_ticket,
-    get_rankings, get_mediator_roles
+    get_rankings, get_mediator_roles, is_mediator
 )
 
 class MatchSystem:
+    """Sistema de partidas RANKED/APOSTADO OTIMIZADO"""
+    
     def __init__(self, db, config, bot):
         self.db = db
         self.config = config
         self.bot = bot
         self.active_lobbies = {}
+        self._cleanup_task = None
         
         self.match_types = {
             "1v1": {"max_players": 2, "teams": False},
             "2v2": {"max_players": 4, "teams": True},
             "3v3": {"max_players": 6, "teams": True}
         }
+        
+        # Inicia task de limpeza
+        if self.bot:
+            self.bot.loop.create_task(self._cleanup_loop())
+
+    async def _cleanup_loop(self):
+        """Limpa lobbies expirados periodicamente"""
+        while True:
+            await asyncio.sleep(300)  # 5 minutos
+            now = datetime.utcnow()
+            to_remove = []
+            
+            for match_id, lobby in self.active_lobbies.items():
+                if lobby['status'] == 'waiting':
+                    created = lobby.get('created_at', now)
+                    if (now - created).seconds > 600:  # 10 minutos
+                        to_remove.append(match_id)
+            
+            for match_id in to_remove:
+                await self.cancel_match(match_id)
 
     async def create_lobby(self, guild_id: str, channel_id: str, author_id: str,
                           match_type: str, map_name: str, is_betting: bool = False,
-                          bet_amount: int = 0, team1_name: str = "Time 1", team2_name: str = "Time 2") -> Dict:
-        """Cria lobby de partida (RANKED ou APOSTADO)"""
+                          bet_amount: int = 0, team1_name: str = "Time 1", 
+                          team2_name: str = "Time 2") -> Dict:
+        """Cria lobby de partida (OTIMIZADO)"""
         settings = get_guild_settings(guild_id)
         
-        # Verificar permissões
-        if not await self._check_permissions(guild_id, author_id, settings, is_betting):
-            return {"error": "❌ Você não tem permissão!"}
-        
-        # Verificar tipo
+        # Verificações rápidas
         if match_type not in self.match_types:
             return {"error": f"❌ Tipos: {', '.join(self.match_types.keys())}"}
         
-        # Verificar aposta
         if is_betting:
             betting_config = settings.get("betting", {})
             if not betting_config.get("enabled", True):
@@ -55,21 +74,19 @@ class MatchSystem:
             max_bet = betting_config.get("max_bet", 10000)
             
             if bet_amount < min_bet:
-                return {"error": f"❌ Aposta mínima: {min_bet} moedas"}
+                return {"error": f"❌ Aposta mínima: {min_bet}"}
             if bet_amount > max_bet:
-                return {"error": f"❌ Aposta máxima: {max_bet} moedas"}
+                return {"error": f"❌ Aposta máxima: {max_bet}"}
             
             balance = get_player_balance(int(guild_id), int(author_id))
             if balance < bet_amount:
-                return {"error": f"❌ Saldo insuficiente! Você tem {balance} moedas"}
-        
-        # Verificar taxa de entrada (RANKED)
-        if not is_betting:
+                return {"error": f"❌ Saldo insuficiente! Você tem {balance}"}
+        else:
             entry_fee = settings.get("ranked", {}).get("entry_fee", 0)
             if entry_fee > 0:
                 balance = get_player_balance(int(guild_id), int(author_id))
                 if balance < entry_fee:
-                    return {"error": f"❌ Taxa de entrada: {entry_fee} moedas"}
+                    return {"error": f"❌ Taxa de entrada: {entry_fee}"}
         
         # Criar partida
         match_data = {
@@ -82,7 +99,6 @@ class MatchSystem:
             "bet_amount": bet_amount,
             "team1_name": team1_name,
             "team2_name": team2_name,
-            "status": "waiting",
             "players": [author_id],
             "teams": {},
             "team_names": {}
@@ -92,22 +108,13 @@ class MatchSystem:
         
         # Cobrar taxa/aposta
         if is_betting:
-            remove_player_balance(
-                int(guild_id),
-                int(author_id),
-                bet_amount,
-                f"Aposta na partida {match_id[:6]}"
-            )
+            remove_player_balance(int(guild_id), int(author_id), bet_amount, f"Aposta {match_id[:6]}")
         else:
             entry_fee = settings.get("ranked", {}).get("entry_fee", 0)
             if entry_fee > 0:
-                remove_player_balance(
-                    int(guild_id),
-                    int(author_id),
-                    entry_fee,
-                    f"Taxa RANKED {match_id[:6]}"
-                )
+                remove_player_balance(int(guild_id), int(author_id), entry_fee, f"Taxa RANKED {match_id[:6]}")
         
+        # Armazenar lobby
         self.active_lobbies[match_id] = {
             "id": match_id,
             "players": [author_id],
@@ -115,22 +122,23 @@ class MatchSystem:
             "status": "waiting",
             "is_betting": is_betting,
             "bet_amount": bet_amount,
-            "created_at": datetime.utcnow()
+            "created_at": datetime.utcnow(),
+            "guild_id": guild_id
         }
         
-        # Anunciar criação
+        # Anunciar
         await self._announce_match(channel_id, match_id, match_data)
         
         return {"match_id": match_id, "success": True}
 
     async def _announce_match(self, channel_id: str, match_id: str, match_data: Dict):
-        """Anuncia partida criada"""
+        """Anuncia partida criada (OTIMIZADO)"""
         channel = self.bot.get_channel(int(channel_id))
         if not channel:
             return
         
         categoria = "💰 APOSTADO" if match_data["is_betting"] else "🏆 RANKED"
-        bet_amount = match_data.get("bet_amount", 0)
+        max_players = self.match_types[match_data["match_type"]]["max_players"]
         
         embed = discord.Embed(
             title=f"🎮 {categoria} - {match_data['match_type']}",
@@ -139,32 +147,28 @@ class MatchSystem:
             timestamp=datetime.utcnow()
         )
         
-        if bet_amount > 0:
-            embed.add_field(name="💰 Aposta", value=f"{bet_amount} moedas", inline=True)
+        if match_data.get("bet_amount", 0) > 0:
+            embed.add_field(name="💰 Aposta", value=f"{match_data['bet_amount']} moedas", inline=True)
         
-        max_players = self.match_types[match_data["match_type"]]["max_players"]
         embed.add_field(name="👥 Jogadores", value=f"1/{max_players}", inline=True)
-        
         embed.add_field(
             name="📌 Como entrar",
-            value=f"Use `!join {match_id[:6]}` para entrar!\n"
-                  f"**Times:** {match_data.get('team1_name', 'Time 1')} e {match_data.get('team2_name', 'Time 2')}",
+            value=f"Use `!join {match_id[:6]}` para entrar!",
             inline=False
         )
-        
         embed.set_footer(text=f"ID: {match_id[:6]}")
         
         await channel.send(embed=embed)
 
     async def join_lobby(self, match_id: str, user_id: str, team: Optional[str] = None) -> Dict:
-        """Entra no lobby"""
-        # Buscar match pelo ID curto ou completo
+        """Entra no lobby (OTIMIZADO)"""
+        # Buscar match
         lobby = None
         full_match_id = None
         
-        for mid, lobby_data in self.active_lobbies.items():
+        for mid, data in self.active_lobbies.items():
             if mid.startswith(match_id) or mid == match_id:
-                lobby = lobby_data
+                lobby = data
                 full_match_id = mid
                 break
         
@@ -172,7 +176,7 @@ class MatchSystem:
             return {"error": "❌ Partida não encontrada!"}
         
         if lobby["status"] != "waiting":
-            return {"error": "❌ Partida já está em andamento!"}
+            return {"error": "❌ Partida já em andamento!"}
         
         if user_id in lobby["players"]:
             return {"error": "❌ Você já está na partida!"}
@@ -187,12 +191,10 @@ class MatchSystem:
         if len(lobby["players"]) >= max_players:
             return {"error": "❌ Partida cheia!"}
         
-        # Verificar time
+        # Verificar time (apenas para 2v2 e 3v3)
         if match_data["match_type"] != "1v1":
-            if not team:
-                return {"error": "❌ Escolha um time! Use: team1 ou team2"}
-            if team not in ["team1", "team2"]:
-                return {"error": "❌ Times: team1 ou team2"}
+            if not team or team not in ["team1", "team2"]:
+                return {"error": "❌ Escolha um time: team1 ou team2"}
             
             team_count = sum(1 for t in lobby["teams"].values() if t == team)
             if team_count >= max_players // 2:
@@ -204,13 +206,8 @@ class MatchSystem:
             if bet_amount > 0:
                 balance = get_player_balance(int(match_data["guild_id"]), int(user_id))
                 if balance < bet_amount:
-                    return {"error": f"❌ Saldo insuficiente para aposta de {bet_amount} moedas!"}
-                remove_player_balance(
-                    int(match_data["guild_id"]),
-                    int(user_id),
-                    bet_amount,
-                    f"Aposta na partida {full_match_id[:6]}"
-                )
+                    return {"error": f"❌ Saldo insuficiente para aposta de {bet_amount}!"}
+                remove_player_balance(int(match_data["guild_id"]), int(user_id), bet_amount, f"Aposta {full_match_id[:6]}")
         
         # Verificar taxa (RANKED)
         if not lobby["is_betting"]:
@@ -218,13 +215,8 @@ class MatchSystem:
             if entry_fee > 0:
                 balance = get_player_balance(int(match_data["guild_id"]), int(user_id))
                 if balance < entry_fee:
-                    return {"error": f"❌ Saldo insuficiente para taxa de {entry_fee} moedas!"}
-                remove_player_balance(
-                    int(match_data["guild_id"]),
-                    int(user_id),
-                    entry_fee,
-                    f"Taxa RANKED {full_match_id[:6]}"
-                )
+                    return {"error": f"❌ Saldo insuficiente para taxa de {entry_fee}!"}
+                remove_player_balance(int(match_data["guild_id"]), int(user_id), entry_fee, f"Taxa RANKED {full_match_id[:6]}")
         
         # Adicionar jogador
         lobby["players"].append(user_id)
@@ -256,9 +248,10 @@ class MatchSystem:
         settings = get_guild_settings(match_data["guild_id"])
         
         # Criar ticket
-        if settings["match_settings"]["auto_ticket"]:
+        if settings.get("match_settings", {}).get("auto_ticket", True):
             ticket_id = await self._create_ticket(match_data, lobby, settings)
-            update_match(match_id, {"ticket_id": ticket_id}, lobby["is_betting"])
+            if ticket_id:
+                update_match(match_id, {"ticket_id": ticket_id}, lobby["is_betting"])
         
         lobby["status"] = "started"
         
@@ -266,7 +259,7 @@ class MatchSystem:
         await self._notify_players(match_data, lobby, settings)
 
     async def _create_ticket(self, match_data: Dict, lobby: Dict, settings: Dict) -> Optional[str]:
-        """Cria ticket (canal privado) para a partida"""
+        """Cria ticket (canal privado) OTIMIZADO"""
         guild = self.bot.get_guild(int(match_data["guild_id"]))
         if not guild:
             return None
@@ -275,8 +268,9 @@ class MatchSystem:
         
         # Buscar categoria
         category = None
-        if settings["match_settings"]["ticket_category"]:
-            category = guild.get_channel(int(settings["match_settings"]["ticket_category"]))
+        ticket_cat = settings.get("match_settings", {}).get("ticket_category")
+        if ticket_cat:
+            category = guild.get_channel(int(ticket_cat))
         
         # Overwrites
         overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
@@ -299,10 +293,8 @@ class MatchSystem:
                 )
         
         # Criar canal
-        channel_name = settings["match_settings"]["ticket_name_template"].format(
-            tipo=categoria,
-            match_id=match_id[:6]
-        )
+        template = settings.get("match_settings", {}).get("ticket_name_template", "🎮-{tipo}-{match_id}")
+        channel_name = template.format(tipo=categoria, match_id=match_id[:6])
         
         try:
             channel = await guild.create_text_channel(
@@ -315,10 +307,8 @@ class MatchSystem:
             print(f"❌ Erro ao criar ticket: {e}")
             return None
         
-        # Criar embed do ticket
+        # Enviar embed com botões
         embed = await self._create_ticket_embed(match_data, lobby, settings)
-        
-        # Enviar embed com botões de mediador
         view = MediatorView(self.db, match_id, match_data["match_type"], lobby["is_betting"], self.config, self.bot)
         await channel.send(embed=embed, view=view)
         
@@ -345,14 +335,14 @@ class MatchSystem:
         return create_ticket(ticket_data)
 
     async def _create_ticket_embed(self, match_data: Dict, lobby: Dict, settings: Dict) -> discord.Embed:
-        """Cria embed do ticket"""
+        """Cria embed do ticket OTIMIZADO"""
         categoria = "💰 APOSTADO" if lobby["is_betting"] else "🏆 RANKED"
         bet_amount = lobby.get("bet_amount", 0)
         
         embed = discord.Embed(
             title=f"🎯 {categoria} - {match_data['match_type']}",
             description=f"**Mapa:** {match_data['map']}",
-            color=settings["customization"]["embed_color"],
+            color=settings.get("customization", {}).get("embed_color", 0x00ff00),
             timestamp=datetime.utcnow()
         )
         
@@ -381,12 +371,13 @@ class MatchSystem:
                 inline=True
             )
         
-        embed.set_footer(text=settings["customization"]["embed_footer"])
+        footer = settings.get("customization", {}).get("embed_footer", "Rank System v3.0")
+        embed.set_footer(text=footer)
         return embed
 
     async def _notify_players(self, match_data: Dict, lobby: Dict, settings: Dict):
-        """Notifica jogadores que a partida começou"""
-        if not settings["customization"]["dm_notifications"]:
+        """Notifica jogadores OTIMIZADO"""
+        if not settings.get("customization", {}).get("dm_notifications", True):
             return
         
         categoria = "APOSTADO" if lobby["is_betting"] else "RANKED"
@@ -402,42 +393,20 @@ class MatchSystem:
             except:
                 pass
 
-    async def _check_permissions(self, guild_id: str, user_id: str, settings: Dict, is_betting: bool) -> bool:
-        """Verifica se usuário tem permissão para criar partida"""
-        if is_betting:
-            allowed = settings.get("betting", {}).get("allowed_roles", [])
-        else:
-            allowed = settings.get("ranked", {}).get("allowed_roles", [])
-        
-        if not allowed:
-            return True
-        
-        guild = self.bot.get_guild(int(guild_id))
-        if not guild:
-            return False
-        
-        member = guild.get_member(int(user_id))
-        if not member:
-            return False
-        
-        for role in member.roles:
-            if role.id in allowed:
-                return True
-        
-        return False
-
     async def cancel_match(self, match_id: str) -> bool:
-        """Cancela partida e devolve valores"""
+        """Cancela partida e devolve valores OTIMIZADO"""
         lobby = self.active_lobbies.get(match_id)
         if not lobby:
             return False
         
         # Devolver apostas/taxas
         bet_amount = lobby.get("bet_amount", 0)
+        guild_id = int(lobby.get("guild_id", 0))
+        
         if bet_amount > 0:
             for player_id in lobby["players"]:
                 add_player_balance(
-                    int(lobby.get("guild_id", 0)),
+                    guild_id,
                     int(player_id),
                     bet_amount,
                     f"Reembolso da partida {match_id[:6]}"
@@ -446,6 +415,7 @@ class MatchSystem:
         lobby["status"] = "cancelled"
         update_match(match_id, {"status": "cancelled"}, lobby["is_betting"])
         
+        # Notificar
         for player_id in lobby["players"]:
             try:
                 user = await self.bot.fetch_user(int(player_id))
@@ -456,15 +426,27 @@ class MatchSystem:
         del self.active_lobbies[match_id]
         return True
 
-    async def get_match_info(self, match_id: str) -> Optional[Dict]:
-        """Obtém informações de uma partida"""
+    def get_match_info(self, match_id: str) -> Optional[Dict]:
+        """Obtém informações de uma partida OTIMIZADO"""
         for mid, lobby in self.active_lobbies.items():
             if mid.startswith(match_id):
                 return lobby
         return None
 
+    def get_cache_stats(self) -> Dict:
+        """Retorna estatísticas dos lobbies ativos"""
+        waiting = sum(1 for l in self.active_lobbies.values() if l['status'] == 'waiting')
+        started = sum(1 for l in self.active_lobbies.values() if l['status'] == 'started')
+        
+        return {
+            "total": len(self.active_lobbies),
+            "waiting": waiting,
+            "started": started,
+            "betting": sum(1 for l in self.active_lobbies.values() if l.get('is_betting', False))
+        }
+
 class MediatorView(View):
-    """View com botões para mediador"""
+    """View com botões para mediador OTIMIZADO"""
     
     def __init__(self, db, match_id: str, match_type: str, is_betting: bool, config, bot):
         super().__init__(timeout=None)
@@ -492,20 +474,11 @@ class MediatorView(View):
         await self._cancel_match(interaction)
 
     async def _declare_winner(self, interaction: discord.Interaction, winner: Optional[str]):
-        """Declara vencedor e processa resultados"""
+        """Declara vencedor e processa resultados OTIMIZADO"""
         from database import get_guild_settings, get_match, add_player_balance, remove_player_balance, update_player_stats
         
         # Verificar se é mediador
-        settings = get_guild_settings(str(interaction.guild.id))
-        mediator_role_ids = get_mediator_roles(str(interaction.guild.id))
-        
-        is_mediator = False
-        for role in interaction.user.roles:
-            if role.id in mediator_role_ids:
-                is_mediator = True
-                break
-        
-        if not is_mediator:
+        if not is_mediator(interaction.user):
             await interaction.response.send_message("❌ Você não é mediador!", ephemeral=True)
             return
         
@@ -513,6 +486,8 @@ class MediatorView(View):
         if not match:
             await interaction.response.send_message("❌ Partida não encontrada!", ephemeral=True)
             return
+        
+        settings = get_guild_settings(match["guild_id"])
         
         # Determinar vencedores e perdedores
         winning_players = []
@@ -541,8 +516,6 @@ class MediatorView(View):
                 
                 total_pot = bet_amount * len(match["players"])
                 prize = int(total_pot * multiplier)
-                
-                # Aplicar taxa
                 tax_amount = int(prize * (tax / 100))
                 prize -= tax_amount
                 
@@ -578,7 +551,7 @@ class MediatorView(View):
                 )
                 update_player_stats(match["guild_id"], player_id, self.match_type, "loss")
         
-        # Finalizar partida
+        # Finalizar
         update_match(self.match_id, {
             "status": "finished",
             "winner": winner,
@@ -599,7 +572,7 @@ class MediatorView(View):
         
         await interaction.response.edit_message(embed=embed, view=self)
         
-        # Notificar jogadores
+        # Notificar
         for player_id in match["players"]:
             try:
                 user = await self.bot.fetch_user(int(player_id))
@@ -609,23 +582,11 @@ class MediatorView(View):
                 pass
 
     async def _cancel_match(self, interaction: discord.Interaction):
-        """Cancela partida via ticket"""
-        from database import get_guild_settings, get_match
-        
-        settings = get_guild_settings(str(interaction.guild.id))
-        mediator_role_ids = get_mediator_roles(str(interaction.guild.id))
-        
-        is_mediator = False
-        for role in interaction.user.roles:
-            if role.id in mediator_role_ids:
-                is_mediator = True
-                break
-        
-        if not is_mediator:
+        """Cancela partida via ticket OTIMIZADO"""
+        if not is_mediator(interaction.user):
             await interaction.response.send_message("❌ Você não é mediador!", ephemeral=True)
             return
         
-        # Cancelar partida
         match_system = self.bot.match_system
         await match_system.cancel_match(self.match_id)
         
