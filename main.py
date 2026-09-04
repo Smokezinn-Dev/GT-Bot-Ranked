@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - SISTEMA RANKED/APOSTADO (CORRIGIDO)
+# MAIN.PY - SISTEMA RANKED/APOSTADO (COM VOZ DESABILITADA)
 # ============================================================
 
 import discord
@@ -8,10 +8,6 @@ import asyncio
 import logging
 import sys
 from datetime import datetime
-
-# ============================================================
-# IMPORTAÇÕES CORRIGIDAS
-# ============================================================
 
 from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER, MATCH_TYPES
 from database import init_db, get_connection
@@ -34,6 +30,26 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+# NÃO ative voice_states se não for usar voz
+
+# ============================================================
+# DESABILITAR MÓDULO DE VOZ (PYTHON 3.13 COMPATIBILIDADE)
+# ============================================================
+
+# ==== COLOQUE AQUI O CÓDIGO PARA DESABILITAR VOZ ====
+try:
+    # Método 1: Tentar desabilitar o módulo de voz
+    discord.voice_client.VoiceClient = None
+except AttributeError:
+    pass
+
+# Método 2: Monkey patch para evitar erro
+import discord.voice_client
+if hasattr(discord.voice_client, 'VoiceClient'):
+    discord.voice_client.VoiceClient = None
+
+print("🔇 Módulo de voz desabilitado (Python 3.13 compatível)")
+# ============================================================
 
 # ============================================================
 # BOT
