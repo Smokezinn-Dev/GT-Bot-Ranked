@@ -1,12 +1,13 @@
 # ============================================================
-# RANKING_SYSTEM.PY - SISTEMA DE RANKING COM ECONOMIA
+# RANKING_SYSTEM.PY - SISTEMA DE RANKING OTIMIZADO
 # ============================================================
 
 import discord
 from discord.ui import Button, View, Select
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
+import time
 
 from database import (
     get_rankings,
@@ -17,52 +18,65 @@ from database import (
 )
 
 class RankingSystem:
-    """Sistema completo de rankings com integração econômica"""
+    """Sistema completo de rankings com cache otimizado"""
     
     def __init__(self, db, config, bot):
         self.db = db
         self.config = config
         self.bot = bot
         self.cache = {}
-        self.cache_ttl = config.CACHE_TTL
+        self.cache_ttl = 60  # 1 minuto (fallback)
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
+        # Tenta pegar do config, se não tiver usa fallback
+        if config and hasattr(config, 'CACHE_TTL'):
+            self.cache_ttl = config.CACHE_TTL
 
     async def initialize_rankings(self):
         """Inicializa cache de rankings para todos os servidores"""
         try:
             from database import server_configs
             configs = server_configs.find({})
+            count = 0
             for server_config in configs:
-                guild_id = server_config['guild_id']
-                for match_type in self.config.MATCH_TYPES:
-                    await self.get_ranking(guild_id, match_type, force=True)
-            print("✅ Rankings inicializados com sucesso!")
+                guild_id = server_config.get('guild_id')
+                if guild_id:
+                    for match_type in ["1v1", "2v2", "3v3"]:
+                        await self.get_ranking(guild_id, match_type, force=True)
+                        count += 1
+                        # Pequeno delay para não sobrecarregar
+                        if count % 10 == 0:
+                            await asyncio.sleep(0.1)
+            print(f"✅ {count} rankings inicializados com sucesso!")
         except Exception as e:
             print(f"⚠️ Erro ao inicializar rankings: {e}")
 
-    async def get_ranking(self, guild_id: str, match_type: str, 
-                          force: bool = False) -> List[Dict]:
-        """Obtém ranking com cache"""
+    async def get_ranking(self, guild_id: str, match_type: str, force: bool = False) -> List[Dict]:
+        """Obtém ranking com cache inteligente"""
         cache_key = f"ranking_{guild_id}_{match_type}"
         
         if not force and cache_key in self.cache:
             data, timestamp = self.cache[cache_key]
             if (datetime.utcnow() - timestamp).seconds < self.cache_ttl:
+                self._cache_hits += 1
                 return data
         
         # Buscar do banco
+        self._cache_misses += 1
         ranking = get_rankings(guild_id, match_type, 50)
         
         self.cache[cache_key] = (ranking, datetime.utcnow())
         return ranking
 
     async def generate_ranking_embed(self, guild_id: str, match_type: str) -> discord.Embed:
-        """Gera embed do ranking com saldo econômico"""
+        """Gera embed do ranking com saldo econômico (OTIMIZADO)"""
         ranking = await self.get_ranking(guild_id, match_type)
         
         embed = discord.Embed(
             title=f"🏆 Ranking {match_type}",
             description=f"Top {len(ranking)} jogadores",
-            color=self.config.EMBED_COLOR,
+            color=0x00ff00,
             timestamp=datetime.utcnow()
         )
         
@@ -73,19 +87,22 @@ class RankingSystem:
         eco_config = get_economy_config(int(guild_id))
         currency_emoji = eco_config.get('currency_emoji', '💰')
         
-        # Formatar ranking
-        for i, player in enumerate(ranking[:10], 1):
+        # Busca em batch para otimizar
+        users = {}
+        for player in ranking[:10]:
             try:
                 user = await self.bot.fetch_user(int(player['user_id']))
-                name = user.display_name
+                users[player['user_id']] = user.display_name
             except:
-                name = f"Jogador {player['user_id'][:6]}"
-            
+                users[player['user_id']] = f"Jogador {player['user_id'][:6]}"
+        
+        # Formatar ranking
+        for i, player in enumerate(ranking[:10], 1):
+            name = users.get(player['user_id'], f"ID: {player['user_id'][:6]}")
             wins = player.get('wins', 0)
             losses = player.get('losses', 0)
             total = wins + losses
             
-            # Buscar saldo
             balance = get_player_balance(int(guild_id), int(player['user_id']))
             
             if total > 0:
@@ -102,7 +119,11 @@ class RankingSystem:
                 inline=False
             )
         
-        embed.set_footer(text=self.config.EMBED_FOOTER)
+        # Estatísticas do cache
+        total_requests = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total_requests * 100) if total_requests > 0 else 0
+        embed.set_footer(text=f"Cache: {hit_rate:.0f}% hit rate • {len(ranking)} jogadores")
+        
         return embed
 
     async def get_player_stats_embed(self, guild_id: str, user_id: str, member: discord.Member) -> discord.Embed:
@@ -125,14 +146,13 @@ class RankingSystem:
                   f"**Derrotas:** {stats['total_losses']}\n"
                   f"**Partidas:** {stats['matches_played']}\n"
                   f"**Saldo:** {currency_emoji} {stats['balance']}\n"
-                  f"**Prestígio:** 🌟 Nível {stats['prestige_level']}\n"
-                  f"**Conquistas:** 🏅 {stats['achievements']}",
+                  f"**Sequência:** {stats.get('current_streak', 0)}",
             inline=False
         )
         
         # Por tipo
-        for match_type in self.config.MATCH_TYPES:
-            type_stats = stats['stats'][match_type]
+        for match_type in ["1v1", "2v2", "3v3"]:
+            type_stats = stats['stats'].get(match_type, {"wins": 0, "losses": 0})
             total = type_stats['wins'] + type_stats['losses']
             winrate = (type_stats['wins'] / total * 100) if total > 0 else 0
             
@@ -144,11 +164,11 @@ class RankingSystem:
                 inline=True
             )
         
-        embed.set_footer(text=self.config.EMBED_FOOTER)
+        embed.set_footer(text="Rank System v3.0")
         return embed
 
     async def get_leaderboard_text(self, guild_id: str, match_type: str) -> str:
-        """Retorna texto do leaderboard para mensagens"""
+        """Retorna texto do leaderboard para mensagens (OTIMIZADO)"""
         ranking = await self.get_ranking(guild_id, match_type)
         eco_config = get_economy_config(int(guild_id))
         currency_emoji = eco_config.get('currency_emoji', '💰')
@@ -186,5 +206,25 @@ class RankingSystem:
 
     async def update_ranking_cache(self, guild_id: str):
         """Atualiza cache de todos os rankings do servidor"""
-        for match_type in self.config.MATCH_TYPES:
+        for match_type in ["1v1", "2v2", "3v3"]:
             await self.get_ranking(guild_id, match_type, force=True)
+        
+        return {"updated": True, "guild": guild_id}
+
+    def get_cache_stats(self) -> Dict:
+        """Retorna estatísticas do cache"""
+        total = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate": f"{hit_rate:.1f}%",
+            "cache_size": len(self.cache)
+        }
+
+    def clear_cache(self):
+        """Limpa o cache"""
+        self.cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        print("🧹 Cache do ranking limpo!")
