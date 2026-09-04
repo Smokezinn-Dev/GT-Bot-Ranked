@@ -1,5 +1,5 @@
 # ============================================================
-# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS (CORRIGIDO)
+# MATCH_SYSTEM.PY - SISTEMA DE PARTIDAS COM FILAS
 # ============================================================
 
 import discord
@@ -19,38 +19,266 @@ from database import (
 )
 
 class MatchSystem:
-    """Sistema de partidas RANKED/APOSTADO"""
+    """Sistema de partidas com FILAS e MATCHMAKING"""
     
     def __init__(self, db, config, bot):
         self.db = db
         self.config = config
         self.bot = bot
         self.active_lobbies = {}
+        self.queues = {
+            "1v1": {"players": [], "min": 2, "max": 2},
+            "2v2": {"players": [], "min": 4, "max": 4},
+            "3v3": {"players": [], "min": 6, "max": 6}
+        }
         self._cleanup_task = None
         
         self.match_types = {
-            "1v1": {"max_players": 2, "teams": False},
-            "2v2": {"max_players": 4, "teams": True},
-            "3v3": {"max_players": 6, "teams": True}
+            "1v1": {"max_players": 2, "teams": False, "min_players": 2},
+            "2v2": {"max_players": 4, "teams": True, "min_players": 4},
+            "3v3": {"max_players": 6, "teams": True, "min_players": 6}
         }
+        
+        # Inicia task de matchmaking
+        if self.bot:
+            self.bot.loop.create_task(self._matchmaking_loop())
 
     def start_cleanup_task(self):
-        """Inicia a task de limpeza (chamado após o bot estar pronto)"""
+        """Inicia a task de limpeza"""
         if self.bot and not self._cleanup_task:
             self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
-    async def _cleanup_loop(self):
-        """Limpa lobbies expirados periodicamente"""
+    async def _matchmaking_loop(self):
+        """Loop principal de matchmaking - verifica filas automaticamente"""
         while True:
             try:
-                await asyncio.sleep(300)  # 5 minutos
+                await asyncio.sleep(5)  # Verifica a cada 5 segundos
+                
+                for match_type, queue_data in self.queues.items():
+                    players = queue_data["players"]
+                    min_players = self.match_types[match_type]["min_players"]
+                    
+                    # Se tiver jogadores suficientes, cria partida
+                    if len(players) >= min_players:
+                        # Pega os jogadores da fila
+                        selected = players[:min_players]
+                        
+                        # Remove da fila
+                        for player in selected:
+                            players.remove(player)
+                        
+                        # Cria partida
+                        await self._create_match_from_queue(
+                            match_type, 
+                            selected,
+                            guild_id=self.bot.guilds[0].id if self.bot.guilds else None
+                        )
+                        
+            except Exception as e:
+                print(f"⚠️ Erro no matchmaking: {e}")
+
+    async def _create_match_from_queue(self, match_type: str, players: List[str], guild_id: str):
+        """Cria partida a partir da fila"""
+        if not guild_id:
+            return
+        
+        settings = get_guild_settings(guild_id)
+        
+        # Define times automaticamente
+        teams = {}
+        team_names = {}
+        
+        if match_type == "1v1":
+            teams = {players[0]: "team1", players[1]: "team2"}
+            team_names = {"team1": "Jogador 1", "team2": "Jogador 2"}
+        else:
+            # Divide em times iguais
+            half = len(players) // 2
+            for i, player in enumerate(players[:half]):
+                teams[player] = "team1"
+            for i, player in enumerate(players[half:]):
+                teams[player] = "team2"
+            team_names = {"team1": "Time 1", "team2": "Time 2"}
+        
+        # Mapa aleatório
+        maps = settings.get("ranked", {}).get("maps", ["Arena", "Castelo", "Floresta", "Deserto", "Vulcão"])
+        map_name = random.choice(maps)
+        
+        # Criar partida
+        match_data = {
+            "guild_id": guild_id,
+            "channel_id": str(self.bot.guilds[0].get_channel(0).id) if self.bot.guilds else "0",
+            "creator_id": players[0],
+            "match_type": match_type,
+            "map": map_name,
+            "is_betting": False,
+            "bet_amount": 0,
+            "team1_name": team_names.get("team1", "Time 1"),
+            "team2_name": team_names.get("team2", "Time 2"),
+            "players": players,
+            "teams": teams,
+            "team_names": team_names
+        }
+        
+        match_id = create_match(match_data, False)
+        
+        # Armazenar lobby
+        self.active_lobbies[match_id] = {
+            "id": match_id,
+            "players": players,
+            "teams": teams,
+            "status": "waiting",
+            "is_betting": False,
+            "bet_amount": 0,
+            "created_at": datetime.utcnow(),
+            "guild_id": guild_id,
+            "from_queue": True
+        }
+        
+        # Anunciar e iniciar
+        await self._announce_match_from_queue(match_id, match_data, players)
+        await self._start_match(match_id)
+
+    async def _announce_match_from_queue(self, match_id: str, match_data: Dict, players: List[str]):
+        """Anuncia partida criada pela fila"""
+        guild = self.bot.get_guild(int(match_data["guild_id"]))
+        if not guild:
+            return
+        
+        # Anuncia no canal geral
+        channel = self.bot.get_channel(int(match_data["channel_id"]))
+        if not channel:
+            # Pega o primeiro canal de texto
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    channel = ch
+                    break
+        
+        if not channel:
+            return
+        
+        categoria = "🏆 RANKED"
+        max_players = self.match_types[match_data["match_type"]]["max_players"]
+        
+        embed = discord.Embed(
+            title=f"🎯 PARTIDA ENCONTRADA!",
+            description=f"**{categoria} - {match_data['match_type']}**\n**Mapa:** {match_data['map']}",
+            color=0x00ff00,
+            timestamp=datetime.utcnow()
+        )
+        
+        # Mostra jogadores
+        if match_data["match_type"] == "1v1":
+            embed.add_field(
+                name="👥 Jogadores",
+                value=f"🔴 <@{players[0]}> vs 🔵 <@{players[1]}>",
+                inline=False
+            )
+        else:
+            half = len(players) // 2
+            team1 = players[:half]
+            team2 = players[half:]
+            embed.add_field(
+                name=f"🔴 {match_data.get('team1_name', 'Time 1')}",
+                value="\n".join([f"👤 <@{p}>" for p in team1]),
+                inline=True
+            )
+            embed.add_field(
+                name=f"🔵 {match_data.get('team2_name', 'Time 2')}",
+                value="\n".join([f"👤 <@{p}>" for p in team2]),
+                inline=True
+            )
+        
+        embed.add_field(
+            name="📌 Próximos passos",
+            value=f"Um ticket será aberto para a partida!\nAguarde o mediador.",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"ID: {match_id[:6]}")
+        
+        await channel.send(embed=embed)
+        
+        # Notifica os jogadores
+        for player_id in players:
+            try:
+                user = await self.bot.fetch_user(int(player_id))
+                await user.send(
+                    f"🎯 Partida RANKED encontrada!\n"
+                    f"**Tipo:** {match_data['match_type']}\n"
+                    f"**Mapa:** {match_data['map']}\n"
+                    f"**ID:** {match_id[:6]}"
+                )
+            except:
+                pass
+
+    async def add_to_queue(self, guild_id: str, user_id: str, match_type: str) -> Dict:
+        """Adiciona jogador à fila"""
+        if match_type not in self.queues:
+            return {"error": f"❌ Tipos: 1v1, 2v2, 3v3"}
+        
+        # Verifica se já está em outra fila
+        for q_type, q_data in self.queues.items():
+            if user_id in q_data["players"]:
+                return {"error": f"❌ Você já está na fila de {q_type}!"}
+        
+        # Verifica se está em uma partida
+        for lobby in self.active_lobbies.values():
+            if user_id in lobby["players"] and lobby["status"] == "waiting":
+                return {"error": "❌ Você já está em uma partida!"}
+        
+        # Adiciona à fila
+        self.queues[match_type]["players"].append(user_id)
+        
+        # Verifica se já tem jogadores suficientes (matchmaking vai pegar)
+        return {"success": True, "match_type": match_type, "position": len(self.queues[match_type]["players"])}
+
+    async def remove_from_queue(self, guild_id: str, user_id: str) -> Dict:
+        """Remove jogador de todas as filas"""
+        removed = False
+        for q_type, q_data in self.queues.items():
+            if user_id in q_data["players"]:
+                q_data["players"].remove(user_id)
+                removed = True
+        
+        if removed:
+            return {"success": True}
+        return {"error": "❌ Você não está em nenhuma fila!"}
+
+    def get_queue_status(self) -> Dict:
+        """Retorna status de todas as filas"""
+        status = {}
+        for match_type, q_data in self.queues.items():
+            players = q_data["players"]
+            min_players = self.match_types[match_type]["min_players"]
+            max_players = self.match_types[match_type]["max_players"]
+            
+            status[match_type] = {
+                "count": len(players),
+                "min": min_players,
+                "max": max_players,
+                "ready": len(players) >= min_players,
+                "players": players[:10]  # Mostra apenas os 10 primeiros
+            }
+        
+        return status
+
+    # ============================================================
+    # MÉTODOS EXISTENTES (MANTIDOS)
+    # ============================================================
+
+    async def _cleanup_loop(self):
+        """Limpa lobbies expirados"""
+        while True:
+            try:
+                await asyncio.sleep(300)
                 now = datetime.utcnow()
                 to_remove = []
                 
                 for match_id, lobby in self.active_lobbies.items():
                     if lobby.get('status') == 'waiting':
                         created = lobby.get('created_at', now)
-                        if (now - created).seconds > 600:  # 10 minutos
+                        if (now - created).seconds > 600:
                             to_remove.append(match_id)
                 
                 for match_id in to_remove:
@@ -62,10 +290,9 @@ class MatchSystem:
                           match_type: str, map_name: str, is_betting: bool = False,
                           bet_amount: int = 0, team1_name: str = "Time 1", 
                           team2_name: str = "Time 2") -> Dict:
-        """Cria lobby de partida"""
+        """Cria lobby de partida (manual)"""
         settings = get_guild_settings(guild_id)
         
-        # Verificações rápidas
         if match_type not in self.match_types:
             return {"error": f"❌ Tipos: {', '.join(self.match_types.keys())}"}
         
@@ -92,7 +319,6 @@ class MatchSystem:
                 if balance < entry_fee:
                     return {"error": f"❌ Taxa de entrada: {entry_fee}"}
         
-        # Criar partida
         match_data = {
             "guild_id": guild_id,
             "channel_id": channel_id,
@@ -110,7 +336,6 @@ class MatchSystem:
         
         match_id = create_match(match_data, is_betting)
         
-        # Cobrar taxa/aposta
         if is_betting:
             remove_player_balance(int(guild_id), int(author_id), bet_amount, f"Aposta {match_id[:6]}")
         else:
@@ -118,7 +343,6 @@ class MatchSystem:
             if entry_fee > 0:
                 remove_player_balance(int(guild_id), int(author_id), entry_fee, f"Taxa RANKED {match_id[:6]}")
         
-        # Armazenar lobby
         self.active_lobbies[match_id] = {
             "id": match_id,
             "players": [author_id],
@@ -130,7 +354,6 @@ class MatchSystem:
             "guild_id": guild_id
         }
         
-        # Anunciar
         await self._announce_match(channel_id, match_id, match_data)
         
         return {"match_id": match_id, "success": True}
@@ -157,7 +380,8 @@ class MatchSystem:
         embed.add_field(name="👥 Jogadores", value=f"1/{max_players}", inline=True)
         embed.add_field(
             name="📌 Como entrar",
-            value=f"Use `!join {match_id[:6]}` para entrar!",
+            value=f"Use `%join {match_id[:6]}` para entrar!\n"
+                  f"**OU** use `%queue {match_data['match_type']}` para entrar na fila!",
             inline=False
         )
         embed.set_footer(text=f"ID: {match_id[:6]}")
@@ -165,8 +389,7 @@ class MatchSystem:
         await channel.send(embed=embed)
 
     async def join_lobby(self, match_id: str, user_id: str, team: Optional[str] = None) -> Dict:
-        """Entra no lobby"""
-        # Buscar match
+        """Entra no lobby manual"""
         lobby = None
         full_match_id = None
         
@@ -195,7 +418,6 @@ class MatchSystem:
         if len(lobby["players"]) >= max_players:
             return {"error": "❌ Partida cheia!"}
         
-        # Verificar time (apenas para 2v2 e 3v3)
         if match_data["match_type"] != "1v1":
             if not team or team not in ["team1", "team2"]:
                 return {"error": "❌ Escolha um time: team1 ou team2"}
@@ -204,7 +426,6 @@ class MatchSystem:
             if team_count >= max_players // 2:
                 return {"error": f"❌ Time {team} está cheio!"}
         
-        # Verificar saldo (BETTING)
         if lobby["is_betting"]:
             bet_amount = lobby.get("bet_amount", 0)
             if bet_amount > 0:
@@ -213,7 +434,6 @@ class MatchSystem:
                     return {"error": f"❌ Saldo insuficiente para aposta de {bet_amount}!"}
                 remove_player_balance(int(match_data["guild_id"]), int(user_id), bet_amount, f"Aposta {full_match_id[:6]}")
         
-        # Verificar taxa (RANKED)
         if not lobby["is_betting"]:
             entry_fee = settings.get("ranked", {}).get("entry_fee", 0)
             if entry_fee > 0:
@@ -222,7 +442,6 @@ class MatchSystem:
                     return {"error": f"❌ Saldo insuficiente para taxa de {entry_fee}!"}
                 remove_player_balance(int(match_data["guild_id"]), int(user_id), entry_fee, f"Taxa RANKED {full_match_id[:6]}")
         
-        # Adicionar jogador
         lobby["players"].append(user_id)
         if team:
             lobby["teams"][user_id] = team
@@ -232,7 +451,6 @@ class MatchSystem:
             "teams": lobby["teams"]
         }, lobby["is_betting"])
         
-        # Verificar se está cheia
         if len(lobby["players"]) >= max_players:
             await self._start_match(full_match_id)
             return {"success": True, "match_started": True}
@@ -251,7 +469,6 @@ class MatchSystem:
         
         settings = get_guild_settings(match_data["guild_id"])
         
-        # Criar ticket
         if settings.get("match_settings", {}).get("auto_ticket", True):
             ticket_id = await self._create_ticket(match_data, lobby, settings)
             if ticket_id:
@@ -259,7 +476,6 @@ class MatchSystem:
         
         lobby["status"] = "started"
         
-        # Notificar jogadores
         await self._notify_players(match_data, lobby, settings)
 
     async def _create_ticket(self, match_data: Dict, lobby: Dict, settings: Dict) -> Optional[str]:
@@ -270,16 +486,13 @@ class MatchSystem:
         
         categoria = "APOSTADO" if lobby["is_betting"] else "RANKED"
         
-        # Buscar categoria
         category = None
         ticket_cat = settings.get("match_settings", {}).get("ticket_category")
         if ticket_cat:
             category = guild.get_channel(int(ticket_cat))
         
-        # Overwrites
         overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
         
-        # Adicionar jogadores
         for player_id in lobby["players"]:
             member = guild.get_member(int(player_id))
             if member:
@@ -287,7 +500,6 @@ class MatchSystem:
                     read_messages=True, send_messages=True, view_channel=True
                 )
         
-        # Adicionar mediadores
         mediator_role_ids = get_mediator_roles(match_data["guild_id"])
         for role_id in mediator_role_ids:
             role = guild.get_role(role_id)
@@ -296,7 +508,6 @@ class MatchSystem:
                     read_messages=True, send_messages=True, view_channel=True
                 )
         
-        # Criar canal
         template = settings.get("match_settings", {}).get("ticket_name_template", "🎮-{tipo}-{match_id}")
         channel_name = template.format(tipo=categoria, match_id=match_id[:6])
         
@@ -311,12 +522,10 @@ class MatchSystem:
             print(f"❌ Erro ao criar ticket: {e}")
             return None
         
-        # Enviar embed com botões
         embed = await self._create_ticket_embed(match_data, lobby, settings)
         view = MediatorView(self.db, match_id, match_data["match_type"], lobby["is_betting"], self.config, self.bot)
         await channel.send(embed=embed, view=view)
         
-        # Notificar mediadores
         for role_id in mediator_role_ids:
             role = guild.get_role(role_id)
             if role:
@@ -325,7 +534,6 @@ class MatchSystem:
                 except:
                     pass
         
-        # Salvar ticket
         ticket_data = {
             "guild_id": match_data["guild_id"],
             "channel_id": str(channel.id),
@@ -357,7 +565,6 @@ class MatchSystem:
         if not lobby["is_betting"] and entry_fee > 0:
             embed.add_field(name="🎫 Taxa", value=f"{entry_fee} moedas", inline=False)
         
-        # Jogadores
         if match_data["match_type"] == "1v1":
             players_text = "\n".join([f"👤 <@{p}>" for p in lobby["players"]])
             embed.add_field(name="👥 Jogadores", value=players_text, inline=False)
@@ -398,12 +605,11 @@ class MatchSystem:
                 pass
 
     async def cancel_match(self, match_id: str) -> bool:
-        """Cancela partida e devolve valores"""
+        """Cancela partida"""
         lobby = self.active_lobbies.get(match_id)
         if not lobby:
             return False
         
-        # Devolver apostas/taxas
         bet_amount = lobby.get("bet_amount", 0)
         guild_id = int(lobby.get("guild_id", 0))
         
@@ -419,7 +625,6 @@ class MatchSystem:
         lobby["status"] = "cancelled"
         update_match(match_id, {"status": "cancelled"}, lobby["is_betting"])
         
-        # Notificar
         for player_id in lobby["players"]:
             try:
                 user = await self.bot.fetch_user(int(player_id))
@@ -438,7 +643,7 @@ class MatchSystem:
         return None
 
     def get_cache_stats(self) -> Dict:
-        """Retorna estatísticas dos lobbies ativos"""
+        """Retorna estatísticas"""
         waiting = sum(1 for l in self.active_lobbies.values() if l.get('status') == 'waiting')
         started = sum(1 for l in self.active_lobbies.values() if l.get('status') == 'started')
         
@@ -449,13 +654,12 @@ class MatchSystem:
             "betting": sum(1 for l in self.active_lobbies.values() if l.get('is_betting', False))
         }
 
+
 # ============================================================
 # MEDIATOR VIEW
 # ============================================================
 
 class MediatorView(View):
-    """View com botões para mediador"""
-    
     def __init__(self, db, match_id: str, match_type: str, is_betting: bool, config, bot):
         super().__init__(timeout=None)
         self.db = db
@@ -482,10 +686,8 @@ class MediatorView(View):
         await self._cancel_match(interaction)
 
     async def _declare_winner(self, interaction: discord.Interaction, winner: Optional[str]):
-        """Declara vencedor e processa resultados"""
         from database import get_guild_settings, get_match, add_player_balance, remove_player_balance, update_player_stats
         
-        # Verificar se é mediador
         if not is_mediator(interaction.user):
             await interaction.response.send_message("❌ Você não é mediador!", ephemeral=True)
             return
@@ -497,7 +699,6 @@ class MediatorView(View):
         
         settings = get_guild_settings(match["guild_id"])
         
-        # Determinar vencedores e perdedores
         winning_players = []
         losing_players = []
         
@@ -514,7 +715,6 @@ class MediatorView(View):
                 else:
                     losing_players.append(player_id)
         
-        # Processar APOSTADO
         if self.is_betting:
             bet_amount = match.get("bet_amount", 0)
             if bet_amount > 0 and winner:
@@ -537,7 +737,6 @@ class MediatorView(View):
                         f"🏆 Prêmio aposta {self.match_id[:6]}"
                     )
         
-        # Processar RANKED
         if not self.is_betting:
             for player_id in winning_players:
                 win_bonus = settings.get("ranked", {}).get("win_bonus", 50)
@@ -559,14 +758,12 @@ class MediatorView(View):
                 )
                 update_player_stats(match["guild_id"], player_id, self.match_type, "loss")
         
-        # Finalizar
         update_match(self.match_id, {
             "status": "finished",
             "winner": winner,
             "finished_at": datetime.utcnow()
         }, self.is_betting)
         
-        # Atualizar embed
         embed = interaction.message.embeds[0]
         embed.color = 0x00ff00 if winner else 0xffaa00
         embed.add_field(
@@ -580,7 +777,6 @@ class MediatorView(View):
         
         await interaction.response.edit_message(embed=embed, view=self)
         
-        # Notificar
         for player_id in match["players"]:
             try:
                 user = await self.bot.fetch_user(int(player_id))
@@ -590,7 +786,6 @@ class MediatorView(View):
                 pass
 
     async def _cancel_match(self, interaction: discord.Interaction):
-        """Cancela partida via ticket"""
         if not is_mediator(interaction.user):
             await interaction.response.send_message("❌ Você não é mediador!", ephemeral=True)
             return
