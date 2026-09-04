@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - SISTEMA RANKED/APOSTADO
+# MAIN.PY - SISTEMA RANKED/APOSTADO (CORRIGIDO)
 # ============================================================
 
 import discord
@@ -9,7 +9,11 @@ import logging
 import sys
 from datetime import datetime
 
-from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
+# ============================================================
+# IMPORTAÇÕES CORRIGIDAS
+# ============================================================
+
+from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER, MATCH_TYPES
 from database import init_db, get_connection
 from match_system import MatchSystem
 from ranking_system import RankingSystem
