@@ -7,7 +7,7 @@ import sys
 import asyncio
 import logging
 from datetime import datetime
-import discord
+import discord.py
 from discord.ext import commands
 
 from config import config, init_config, DiscloudHealth
