@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - SISTEMA RANKED/APOSTADO (OTIMIZADO)
+# MAIN.PY - SISTEMA RANKED/APOSTADO (ATUALIZADO)
 # ============================================================
 
 import discord
@@ -11,14 +11,10 @@ import gc
 import time
 from datetime import datetime
 
-# ============================================================
-# IMPORTAÇÕES
-# ============================================================
-
 try:
     from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
 except ImportError:
-    DISCORD_TOKEN = "SEU_TOKEN_AQUI"
+    DISCORD_TOKEN = "MTQ1NjMxMTk2MTI3NjEyNTIwNg.GC3uIV.VQRu36MVjIWsXQ40QEZ2tX_GlKah49ZF7soD80"
     EMBED_COLOR = 0x00ff00
     EMBED_FOOTER = "Rank System v3.0"
 
@@ -71,9 +67,11 @@ async def on_ready():
     print(f"📊 SERVIDORES: {len(bot.guilds)}")
     print("="*60)
     
+    # Inicia a task de limpeza do match_system
+    match_system.start_cleanup_task()
+    
     await ranking_system.initialize_rankings()
     
-    # Limpa cache de memória
     gc.collect()
     
     await bot.change_presence(
@@ -83,7 +81,7 @@ async def on_ready():
         )
     )
     
-    print(f"💾 RAM: {get_ram_usage()}MB")
+    print("✅ SISTEMA INICIALIZADO!")
     print("="*60)
 
 @bot.event
@@ -95,17 +93,6 @@ async def on_command_error(ctx, error):
         return
     print(f"❌ ERRO: {error}")
     await ctx.send(f"❌ Erro: {str(error)[:100]}", delete_after=10)
-
-# ============================================================
-# FUNÇÃO DE RAM
-# ============================================================
-
-def get_ram_usage() -> int:
-    try:
-        import psutil
-        return psutil.Process().memory_info().rss // 1024 // 1024
-    except:
-        return 0
 
 # ============================================================
 # COMANDO HELP
