@@ -4,6 +4,7 @@
 # ============================================================
 
 import os
+import discord  # <--- ADICIONADO
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 import time
@@ -496,9 +497,9 @@ def get_mediator_roles(guild_id: str) -> List[int]:
     settings = get_guild_settings(guild_id)
     return settings.get("match_settings", {}).get("mediator_roles", [])
 
-def is_mediator(member: discord.Member) -> bool:
+def is_mediator(member) -> bool:
     """Verifica se um membro é mediador"""
-    if not member.guild:
+    if not member or not hasattr(member, 'guild') or not member.guild:
         return False
     
     guild_id = str(member.guild.id)
