@@ -1,6 +1,6 @@
 # ============================================================
 # ADMIN_COMMANDS.PY - COMANDOS 100% CUSTOMIZÁVEIS
-# SISTEMA RANKED/APOSTADO - COMPLETO
+# SISTEMA RANKED/APOSTADO + FILAS - COMPLETO
 # ============================================================
 
 import discord
@@ -37,7 +37,7 @@ class AdminCommands:
 
         @self.bot.command(name="rank")
         async def rank_cmd(ctx, match_type: str = "1v1"):
-            """Mostra ranking - !rank [1v1|2v2|3v3]"""
+            """Mostra ranking - %rank [1v1|2v2|3v3]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -46,7 +46,7 @@ class AdminCommands:
 
         @self.bot.command(name="myrank")
         async def myrank_cmd(ctx, match_type: str = "1v1"):
-            """Minhas estatísticas - !myrank [1v1|2v2|3v3]"""
+            """Minhas estatísticas - %myrank [1v1|2v2|3v3]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -84,13 +84,148 @@ class AdminCommands:
             await ctx.send(embed=embed)
 
         # ============================================================
-        # 2. CRIAÇÃO DE PARTIDAS
+        # 2. SISTEMA DE FILAS
+        # ============================================================
+
+        @self.bot.command(name="queue", aliases=["q"])
+        async def queue_cmd(ctx, match_type: str = None):
+            """Entra na fila - %queue [1v1|2v2|3v3]"""
+            if not match_type:
+                # Mostra status da fila
+                status = self.match_system.get_queue_status()
+                
+                embed = discord.Embed(
+                    title="📊 STATUS DAS FILAS",
+                    color=0x00ff00,
+                    timestamp=datetime.utcnow()
+                )
+                
+                for q_type, q_data in status.items():
+                    ready = "🟢 PRONTO" if q_data["ready"] else "🔴 AGUARDANDO"
+                    embed.add_field(
+                        name=f"{q_type}",
+                        value=f"**Jogadores:** {q_data['count']}/{q_data['min']}\n"
+                              f"**Status:** {ready}\n"
+                              f"**Usar:** `%queue {q_type}`",
+                        inline=False
+                    )
+                
+                await ctx.send(embed=embed)
+                return
+            
+            if match_type == "status":
+                status = self.match_system.get_queue_status()
+                embed = discord.Embed(
+                    title="📊 STATUS DAS FILAS",
+                    color=0x00ff00,
+                    timestamp=datetime.utcnow()
+                )
+                for q_type, q_data in status.items():
+                    ready = "🟢 PRONTO" if q_data["ready"] else "🔴 AGUARDANDO"
+                    embed.add_field(
+                        name=f"{q_type}",
+                        value=f"**Jogadores:** {q_data['count']}/{q_data['min']}\n**Status:** {ready}",
+                        inline=False
+                    )
+                await ctx.send(embed=embed)
+                return
+            
+            if match_type == "list":
+                status = self.match_system.get_queue_status()
+                embed = discord.Embed(
+                    title="📋 JOGADORES NA FILA",
+                    color=0x00ff00,
+                    timestamp=datetime.utcnow()
+                )
+                for q_type, q_data in status.items():
+                    if q_data["players"]:
+                        players = "\n".join([f"👤 <@{p}>" for p in q_data["players"][:10]])
+                        if len(q_data["players"]) > 10:
+                            players += f"\n... e mais {len(q_data['players']) - 10} jogadores"
+                        embed.add_field(name=f"{q_type}", value=players, inline=False)
+                    else:
+                        embed.add_field(name=f"{q_type}", value="Vazio", inline=False)
+                await ctx.send(embed=embed)
+                return
+            
+            if match_type not in ["1v1", "2v2", "3v3"]:
+                await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
+                return
+            
+            result = await self.match_system.add_to_queue(str(ctx.guild.id), str(ctx.author.id), match_type)
+            
+            if "error" in result:
+                await ctx.send(result["error"])
+                return
+            
+            status = self.match_system.get_queue_status()
+            q_data = status[match_type]
+            total = q_data["count"]
+            min_players = q_data["min"]
+            
+            embed = discord.Embed(
+                title="✅ ENTROU NA FILA!",
+                description=f"**Tipo:** {match_type}\n**Posição:** {total}/{min_players}",
+                color=0x00ff00,
+                timestamp=datetime.utcnow()
+            )
+            
+            if total >= min_players:
+                embed.add_field(name="🎯 Status", value="🟢 Aguardando matchmaking...", inline=False)
+                embed.add_field(name="⏳ Previsão", value="Em instantes você será matchado!", inline=False)
+            else:
+                faltam = min_players - total
+                embed.add_field(name="⏳ Aguardando", value=f"Faltam **{faltam}** jogador(es) para iniciar!", inline=False)
+            
+            embed.set_footer(text="Use %queue status para ver todas as filas")
+            await ctx.send(embed=embed)
+
+        @self.bot.command(name="leave")
+        async def leave_queue_cmd(ctx):
+            """Sai da fila - %leave"""
+            result = await self.match_system.remove_from_queue(str(ctx.guild.id), str(ctx.author.id))
+            
+            if "error" in result:
+                await ctx.send(result["error"])
+                return
+            
+            await ctx.send("✅ Você saiu da fila!")
+
+        @self.bot.command(name="queueadmin")
+        @commands.has_permissions(administrator=True)
+        async def queue_admin_cmd(ctx, action: str, match_type: str = None, user: discord.Member = None):
+            """Admin da fila - %queueadmin clear [1v1|2v2|3v3]"""
+            if action == "clear":
+                if not match_type or match_type not in ["1v1", "2v2", "3v3"]:
+                    await ctx.send("❌ Use: %queueadmin clear 1v1")
+                    return
+                
+                self.match_system.queues[match_type]["players"] = []
+                await ctx.send(f"✅ Fila {match_type} limpa!")
+            
+            elif action == "remove":
+                if not user:
+                    await ctx.send("❌ Use: %queueadmin remove @user")
+                    return
+                
+                result = await self.match_system.remove_from_queue(str(ctx.guild.id), str(user.id))
+                if "error" in result:
+                    await ctx.send(result["error"])
+                    return
+                
+                await ctx.send(f"✅ {user.mention} removido da fila!")
+            
+            else:
+                await ctx.send("❌ Ações: clear, remove")
+
+        # ============================================================
+        # 3. CRIAÇÃO DE PARTIDAS
         # ============================================================
 
         @self.bot.command(name="ranked")
         @commands.has_permissions(administrator=True)
         async def ranked_cmd(ctx, match_type: str, map_name: str = "Arena"):
-            """Cria partida RANKED - !ranked <tipo> [mapa]"""
+            """Cria partida RANKED - %ranked <tipo> [mapa]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -109,7 +244,7 @@ class AdminCommands:
         @self.bot.command(name="apostado")
         @commands.has_permissions(administrator=True)
         async def apostado_cmd(ctx, match_type: str, bet_amount: int, map_name: str = "Arena"):
-            """Cria partida APOSTADO - !apostado <tipo> <aposta> [mapa]"""
+            """Cria partida APOSTADO - %apostado <tipo> <aposta> [mapa]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -130,12 +265,12 @@ class AdminCommands:
             await ctx.send(f"✅ Partida APOSTADO criada! ID: `{result['match_id'][:6]}`")
 
         # ============================================================
-        # 3. ENTRAR EM PARTIDA
+        # 4. ENTRAR EM PARTIDA
         # ============================================================
 
         @self.bot.command(name="join")
         async def join_cmd(ctx, match_id: str, team: Optional[str] = None):
-            """Entra em uma partida - !join <ID> [team1|team2]"""
+            """Entra em uma partida - %join <ID> [team1|team2]"""
             if team and team not in ["team1", "team2"]:
                 await ctx.send("❌ Times: team1 ou team2")
                 return
@@ -152,7 +287,7 @@ class AdminCommands:
                 await ctx.send(f"✅ Entrou na partida! ({result.get('player_count', 0)} jogadores)")
 
         # ============================================================
-        # 4. CONFIGURAÇÃO DO SERVIDOR
+        # 5. CONFIGURAÇÃO DO SERVIDOR
         # ============================================================
 
         @self.bot.command(name="config")
@@ -212,6 +347,16 @@ class AdminCommands:
                 inline=False
             )
             
+            # FILAS
+            queue_status = self.match_system.get_queue_status()
+            embed.add_field(
+                name="📊 FILAS",
+                value=f"**1v1:** {queue_status['1v1']['count']} jogadores\n"
+                      f"**2v2:** {queue_status['2v2']['count']} jogadores\n"
+                      f"**3v3:** {queue_status['3v3']['count']} jogadores",
+                inline=False
+            )
+            
             # MEDIADORES
             mediator_roles = get_mediator_roles(str(ctx.guild.id))
             embed.add_field(
@@ -220,13 +365,13 @@ class AdminCommands:
                 inline=False
             )
             
-            embed.set_footer(text="Use !setconfig para alterar")
+            embed.set_footer(text="Use %setconfig para alterar")
             await ctx.send(embed=embed)
 
         @self.bot.command(name="setconfig")
         @commands.has_permissions(administrator=True)
         async def setconfig_cmd(ctx, key: str, *, value: str):
-            """Configura qualquer opção - !setconfig <chave> <valor>"""
+            """Configura qualquer opção - %setconfig <chave> <valor>"""
             valid_keys = [
                 "currency.name", "currency.symbol",
                 "ranked.enabled", "ranked.win_bonus", "ranked.loss_penalty", "ranked.entry_fee",
@@ -257,7 +402,7 @@ class AdminCommands:
         @self.bot.command(name="setranked")
         @commands.has_permissions(administrator=True)
         async def setranked_cmd(ctx, option: str, value: str):
-            """Configura RANKED - !setranked <opção> <valor>"""
+            """Configura RANKED - %setranked <opção> <valor>"""
             mapping = {
                 "win_bonus": "ranked.win_bonus",
                 "loss_penalty": "ranked.loss_penalty",
@@ -272,7 +417,7 @@ class AdminCommands:
         @self.bot.command(name="setbetting")
         @commands.has_permissions(administrator=True)
         async def setbetting_cmd(ctx, option: str, value: str):
-            """Configura APOSTADO - !setbetting <opção> <valor>"""
+            """Configura APOSTADO - %setbetting <opção> <valor>"""
             mapping = {
                 "min_bet": "betting.min_bet",
                 "max_bet": "betting.max_bet",
@@ -287,7 +432,7 @@ class AdminCommands:
         @self.bot.command(name="setprizes")
         @commands.has_permissions(administrator=True)
         async def setprizes_cmd(ctx, position: str, amount: int):
-            """Configura prêmios - !setprizes <posição> <valor>"""
+            """Configura prêmios - %setprizes <posição> <valor>"""
             if position not in ["1", "2", "3", "4_10"]:
                 await ctx.send("❌ Posições: 1, 2, 3, 4_10")
                 return
@@ -296,7 +441,7 @@ class AdminCommands:
         @self.bot.command(name="setcurrency")
         @commands.has_permissions(administrator=True)
         async def setcurrency_cmd(ctx, option: str, *, value: str):
-            """Configura moeda - !setcurrency <opção> <valor>"""
+            """Configura moeda - %setcurrency <opção> <valor>"""
             mapping = {
                 "name": "currency.name", 
                 "symbol": "currency.symbol", 
@@ -308,20 +453,20 @@ class AdminCommands:
             await setconfig_cmd(ctx, mapping[option], value)
 
         # ============================================================
-        # 5. MEDIADORES
+        # 6. MEDIADORES
         # ============================================================
 
         @self.bot.command(name="setmediator")
         @commands.has_permissions(administrator=True)
         async def setmediator_cmd(ctx, role: discord.Role):
-            """Define cargo mediador - !setmediator @cargo"""
+            """Define cargo mediador - %setmediator @cargo"""
             set_mediator_role(str(ctx.guild.id), role.id)
             await ctx.send(f"✅ {role.mention} agora é cargo mediador!")
 
         @self.bot.command(name="addmediator")
         @commands.has_permissions(administrator=True)
         async def addmediator_cmd(ctx, role: discord.Role):
-            """Adiciona cargo mediador - !addmediator @cargo"""
+            """Adiciona cargo mediador - %addmediator @cargo"""
             result = add_mediator_role(str(ctx.guild.id), role.id)
             if result:
                 await ctx.send(f"✅ {role.mention} adicionado como mediador!")
@@ -331,7 +476,7 @@ class AdminCommands:
         @self.bot.command(name="removemediator")
         @commands.has_permissions(administrator=True)
         async def removemediator_cmd(ctx, role: discord.Role):
-            """Remove cargo mediador - !removemediator @cargo"""
+            """Remove cargo mediador - %removemediator @cargo"""
             result = remove_mediator_role(str(ctx.guild.id), role.id)
             if result:
                 await ctx.send(f"✅ {role.mention} removido dos mediadores!")
@@ -361,13 +506,13 @@ class AdminCommands:
             await ctx.send(embed=embed)
 
         # ============================================================
-        # 6. ADMINISTRAÇÃO DE VITÓRIAS
+        # 7. ADMINISTRAÇÃO DE VITÓRIAS
         # ============================================================
 
         @self.bot.command(name="addwins")
         @commands.has_permissions(administrator=True)
         async def addwins_cmd(ctx, member: discord.Member, amount: int, match_type: str = "1v1"):
-            """Adiciona vitórias - !addwins @user <quantidade> [tipo]"""
+            """Adiciona vitórias - %addwins @user <quantidade> [tipo]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -384,7 +529,7 @@ class AdminCommands:
         @self.bot.command(name="removewins")
         @commands.has_permissions(administrator=True)
         async def removewins_cmd(ctx, member: discord.Member, amount: int, match_type: str = "1v1"):
-            """Remove vitórias - !removewins @user <quantidade> [tipo]"""
+            """Remove vitórias - %removewins @user <quantidade> [tipo]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -408,7 +553,7 @@ class AdminCommands:
         @self.bot.command(name="setwins")
         @commands.has_permissions(administrator=True)
         async def setwins_cmd(ctx, member: discord.Member, amount: int, match_type: str = "1v1"):
-            """Define vitórias - !setwins @user <quantidade> [tipo]"""
+            """Define vitórias - %setwins @user <quantidade> [tipo]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -432,13 +577,13 @@ class AdminCommands:
             await ctx.send(f"✅ Vitórias de {member.mention} no {match_type} definidas para {amount}!")
 
         # ============================================================
-        # 7. PRÊMIOS
+        # 8. PRÊMIOS
         # ============================================================
 
         @self.bot.command(name="distributetop")
         @commands.has_permissions(administrator=True)
         async def distributetop_cmd(ctx, match_type: str = "1v1"):
-            """Distribui prêmios para o top 10 - !distributetop [tipo]"""
+            """Distribui prêmios para o top 10 - %distributetop [tipo]"""
             if match_type not in ["1v1", "2v2", "3v3"]:
                 await ctx.send("❌ Tipos: 1v1, 2v2, 3v3")
                 return
@@ -505,17 +650,17 @@ class AdminCommands:
             else:
                 embed.add_field(name="⏳ Próxima Distribuição", value="Disponível agora!", inline=False)
             
-            embed.set_footer(text="Use !distributetop para distribuir")
+            embed.set_footer(text="Use %distributetop para distribuir")
             await ctx.send(embed=embed)
 
         # ============================================================
-        # 8. ECONOMIA (ADMIN)
+        # 9. ECONOMIA (ADMIN)
         # ============================================================
 
         @self.bot.command(name="ecogive")
         @commands.has_permissions(administrator=True)
         async def ecogive_cmd(ctx, member: discord.Member, amount: int, *, reason: str = "Ajuste admin"):
-            """Dá moedas - !ecogive @user <valor> [motivo]"""
+            """Dá moedas - %ecogive @user <valor> [motivo]"""
             if amount <= 0:
                 await ctx.send("❌ Valor deve ser positivo!")
                 return
@@ -525,7 +670,7 @@ class AdminCommands:
         @self.bot.command(name="ecoremove")
         @commands.has_permissions(administrator=True)
         async def ecoremove_cmd(ctx, member: discord.Member, amount: int, *, reason: str = "Ajuste admin"):
-            """Remove moedas - !ecoremove @user <valor> [motivo]"""
+            """Remove moedas - %ecoremove @user <valor> [motivo]"""
             if amount <= 0:
                 await ctx.send("❌ Valor deve ser positivo!")
                 return
@@ -539,7 +684,7 @@ class AdminCommands:
         @self.bot.command(name="ecoset")
         @commands.has_permissions(administrator=True)
         async def ecoset_cmd(ctx, member: discord.Member, amount: int, *, reason: str = "Ajuste admin"):
-            """Define saldo - !ecoset @user <valor> [motivo]"""
+            """Define saldo - %ecoset @user <valor> [motivo]"""
             if amount < 0:
                 await ctx.send("❌ Valor deve ser positivo!")
                 return
@@ -552,7 +697,7 @@ class AdminCommands:
             await ctx.send(f"✅ Saldo de {member.mention} definido para {amount}!\n**Motivo:** {reason}")
 
         # ============================================================
-        # 9. UTILITÁRIOS ADMIN
+        # 10. UTILITÁRIOS ADMIN
         # ============================================================
 
         @self.bot.command(name="cachestats")
@@ -598,7 +743,7 @@ class AdminCommands:
         @self.bot.command(name="matchinfo")
         @commands.has_permissions(administrator=True)
         async def match_info_cmd(ctx, match_id: str):
-            """Mostra informações de uma partida - !matchinfo <ID>"""
+            """Mostra informações de uma partida - %matchinfo <ID>"""
             match_data = get_match(match_id, False)
             if not match_data:
                 match_data = get_match(match_id, True)
@@ -629,7 +774,7 @@ class AdminCommands:
         @self.bot.command(name="cancelmatch")
         @commands.has_permissions(administrator=True)
         async def cancel_match_cmd(ctx, match_id: str):
-            """Cancela uma partida - !cancelmatch <ID>"""
+            """Cancela uma partida - %cancelmatch <ID>"""
             result = await self.match_system.cancel_match(match_id)
             if result:
                 await ctx.send(f"✅ Partida `{match_id[:6]}` cancelada com sucesso!")
@@ -637,13 +782,13 @@ class AdminCommands:
                 await ctx.send(f"❌ Partida `{match_id}` não encontrada!")
 
         # ============================================================
-        # 10. SISTEMA DE MAPAS
+        # 11. SISTEMA DE MAPAS
         # ============================================================
 
         @self.bot.command(name="addmap")
         @commands.has_permissions(administrator=True)
         async def add_map_cmd(ctx, *, map_name: str):
-            """Adiciona um mapa ao servidor - !addmap <nome>"""
+            """Adiciona um mapa ao servidor - %addmap <nome>"""
             settings = get_guild_settings(str(ctx.guild.id))
             maps = settings.get("ranked", {}).get("maps", [])
             
@@ -658,7 +803,7 @@ class AdminCommands:
         @self.bot.command(name="removemap")
         @commands.has_permissions(administrator=True)
         async def remove_map_cmd(ctx, *, map_name: str):
-            """Remove um mapa do servidor - !removemap <nome>"""
+            """Remove um mapa do servidor - %removemap <nome>"""
             settings = get_guild_settings(str(ctx.guild.id))
             maps = settings.get("ranked", {}).get("maps", [])
             
@@ -690,6 +835,93 @@ class AdminCommands:
             for i, map_name in enumerate(maps, 1):
                 embed.add_field(name=f"#{i}", value=map_name, inline=True)
             
+            await ctx.send(embed=embed)
+
+        # ============================================================
+        # 12. COMANDO DE AJUDA EXTENDIDO (ADMIN)
+        # ============================================================
+
+        @self.bot.command(name="adminhelp")
+        @commands.has_permissions(administrator=True)
+        async def admin_help_cmd(ctx):
+            """Mostra todos os comandos admin"""
+            embed = discord.Embed(
+                title="🔧 COMANDOS ADMIN - RANKED SYSTEM",
+                description="Todos os comandos disponíveis para administradores",
+                color=0x00ff00,
+                timestamp=datetime.utcnow()
+            )
+            
+            embed.add_field(
+                name="🎯 CRIAÇÃO",
+                value="`%ranked <tipo> [mapa]` - Criar RANKED\n"
+                      "`%apostado <tipo> <aposta> [mapa]` - Criar APOSTADO",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="⚙️ CONFIGURAÇÃO",
+                value="`%config` - Ver configurações\n"
+                      "`%setconfig <chave> <valor>` - Configurar\n"
+                      "`%setranked <opção> <valor>` - Configurar RANKED\n"
+                      "`%setbetting <opção> <valor>` - Configurar APOSTADO\n"
+                      "`%setprizes <posição> <valor>` - Configurar prêmios\n"
+                      "`%setcurrency <opção> <valor>` - Configurar moeda",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="👑 MEDIADORES",
+                value="`%setmediator @cargo` - Definir mediador\n"
+                      "`%addmediator @cargo` - Adicionar mediador\n"
+                      "`%removemediator @cargo` - Remover mediador\n"
+                      "`%mediators` - Listar mediadores",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🏆 RANKING",
+                value="`%addwins @user <qtd> [tipo]` - Adicionar vitórias\n"
+                      "`%removewins @user <qtd> [tipo]` - Remover vitórias\n"
+                      "`%setwins @user <qtd> [tipo]` - Definir vitórias\n"
+                      "`%distributetop [tipo]` - Distribuir prêmios\n"
+                      "`%topinfo` - Info dos prêmios",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="📊 FILAS",
+                value="`%queueadmin clear <tipo>` - Limpar fila\n"
+                      "`%queueadmin remove @user` - Remover da fila",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="💰 ECONOMIA",
+                value="`%ecogive @user <valor> [motivo]` - Dar moedas\n"
+                      "`%ecoremove @user <valor> [motivo]` - Remover moedas\n"
+                      "`%ecoset @user <valor> [motivo]` - Definir saldo",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🗺️ MAPAS",
+                value="`%addmap <nome>` - Adicionar mapa\n"
+                      "`%removemap <nome>` - Remover mapa\n"
+                      "`%maps` - Listar mapas",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🔧 UTILITÁRIOS",
+                value="`%cachestats` - Estatísticas do cache\n"
+                      "`%clearcache` - Limpar cache\n"
+                      "`%matchinfo <ID>` - Info da partida\n"
+                      "`%cancelmatch <ID>` - Cancelar partida",
+                inline=False
+            )
+            
+            embed.set_footer(text="Rank System v3.0")
             await ctx.send(embed=embed)
 
         print("✅ Comandos admin registrados!")
