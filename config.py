@@ -11,7 +11,7 @@ import os
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not DISCORD_TOKEN:
-    DISCORD_TOKEN = "MTQ1NjMxMTk2MTI3NjEyNTIwNg.GC3uIV.VQRu36MVjIWsXQ40QEZ2tX_GlKah49ZF7soD80"
+    DISCORD_TOKEN = "MTU0NTM5NDAzMjQyMTYzNDA4MQ.G50Z0a.Dc-PkgeAOQgpHYK4zhYph_VkuiEyUdtbIBlf7k"
 
 # ============================================================
 # MONGODB
