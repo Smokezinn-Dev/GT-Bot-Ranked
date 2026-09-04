@@ -14,7 +14,7 @@ from datetime import datetime
 try:
     from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
 except ImportError:
-    DISCORD_TOKEN = "MTQ1NjMxMTk2MTI3NjEyNTIwNg.GC3uIV.VQRu36MVjIWsXQ40QEZ2tX_GlKah49ZF7soD80"
+    DISCORD_TOKEN = "MTU0NTM5NDAzMjQyMTYzNDA4MQ.G50Z0a.Dc-PkgeAOQgpHYK4zhYph_VkuiEyUdtbIBlf7k"
     EMBED_COLOR = 0x00ff00
     EMBED_FOOTER = "Rank System v3.0"
 
