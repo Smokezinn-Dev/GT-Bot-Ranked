@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - SISTEMA RANKED/APOSTADO (CORRIGIDO)
+# MAIN.PY - SISTEMA RANKED/APOSTADO (OTIMIZADO)
 # ============================================================
 
 import discord
@@ -7,22 +7,20 @@ from discord.ext import commands
 import asyncio
 import logging
 import sys
+import gc
+import time
 from datetime import datetime
 
 # ============================================================
-# IMPORTAÇÕES CORRIGIDAS
+# IMPORTAÇÕES
 # ============================================================
 
 try:
-    from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER, MATCH_TYPES, MONGODB_URL
-except ImportError as e:
-    print(f"❌ Erro ao importar config: {e}")
-    print("🔧 Usando valores padrão...")
+    from config import DISCORD_TOKEN, EMBED_COLOR, EMBED_FOOTER
+except ImportError:
     DISCORD_TOKEN = "SEU_TOKEN_AQUI"
     EMBED_COLOR = 0x00ff00
     EMBED_FOOTER = "Rank System v3.0"
-    MATCH_TYPES = ["1v1", "2v2", "3v3"]
-    MONGODB_URL = "mongodb+srv://gleicyferreira899_db_user:Q57eSQXyzUoWQxw4@cluster0.xhwrpcd.mongodb.net/?appName=Cluster0"
 
 from database import init_db
 from match_system import MatchSystem
@@ -30,7 +28,7 @@ from ranking_system import RankingSystem
 from admin_commands import AdminCommands
 
 # ============================================================
-# LOGGING
+# LOGGING MÍNIMO
 # ============================================================
 
 logging.basicConfig(level=logging.WARNING)
@@ -52,7 +50,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ============================================================
-# INICIALIZAÇÃO DOS SISTEMAS
+# INICIALIZAÇÃO
 # ============================================================
 
 print("🚀 Inicializando sistemas...")
@@ -75,6 +73,9 @@ async def on_ready():
     
     await ranking_system.initialize_rankings()
     
+    # Limpa cache de memória
+    gc.collect()
+    
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.playing,
@@ -82,7 +83,7 @@ async def on_ready():
         )
     )
     
-    print("✅ SISTEMA INICIALIZADO!")
+    print(f"💾 RAM: {get_ram_usage()}MB")
     print("="*60)
 
 @bot.event
@@ -94,6 +95,17 @@ async def on_command_error(ctx, error):
         return
     print(f"❌ ERRO: {error}")
     await ctx.send(f"❌ Erro: {str(error)[:100]}", delete_after=10)
+
+# ============================================================
+# FUNÇÃO DE RAM
+# ============================================================
+
+def get_ram_usage() -> int:
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss // 1024 // 1024
+    except:
+        return 0
 
 # ============================================================
 # COMANDO HELP
