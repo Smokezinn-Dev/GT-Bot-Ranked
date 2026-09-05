@@ -1,5 +1,5 @@
 # ============================================================
-# MAIN.PY - GT BOT RANKED (COMPLETO)
+# MAIN.PY - GT BOT RANKED (COMPLETO - SEM DUPLICATAS)
 # ============================================================
 
 import discord
@@ -83,7 +83,6 @@ async def criar_cmd(ctx, match_type: str = "1v1"):
     settings = get_guild_settings(str(ctx.guild.id))
     maps = settings.get("ranked", {}).get("maps", ["Arena", "Castelo", "Floresta", "Deserto"])
     
-    # Monta lista vertical com contadores
     map_list = []
     for map_name in maps:
         count = bot.match_system.get_queue_count(str(ctx.guild.id), map_name, match_type)
@@ -303,23 +302,6 @@ async def join_cmd(ctx, match_id: str, team: str = None):
 
 
 # ============================================================
-# COMANDO: SALDO
-# ============================================================
-
-@bot.command(name="bal", aliases=["saldo", "balance"])
-async def bal_cmd(ctx, member: discord.Member = None):
-    """Ver saldo de um jogador."""
-    member = member or ctx.author
-    from database import get_player_balance
-    bal = get_player_balance(ctx.guild.id, member.id)
-    embed = discord.Embed(
-        description=f"💰 {member.display_name}: **{bal}**",
-        color=0x00ff00
-    )
-    await ctx.send(embed=embed)
-
-
-# ============================================================
 # COMANDOS ADMIN
 # ============================================================
 
@@ -421,16 +403,6 @@ async def ticket_panel(ctx):
     
     view = TicketPanelView(bot.match_system, str(ctx.guild.id))
     await ctx.send(embed=embed, view=view)
-
-
-# ============================================================
-# COMANDOS ADMIN (HERDADOS DO COG)
-# ============================================================
-
-# Os seguintes comandos estão no admin_commands.py:
-# %config, %setmediator, %mediators, %give, %take, 
-# %setbalance, %cancelmatch, %matchinfo, %distributetop,
-# %addconfigrole, %removeconfigrole
 
 
 # ============================================================
