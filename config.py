@@ -6,10 +6,8 @@ import os
 import logging
 
 # Token e Mongo (prioridade: env vars)
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or "MTU0NTM5NDAzMjQyMTYzNDA4MQ.G50Z0a.Dc-PkgeAOQgpHYK4zhYph_VkuiEyUdtbIBlf7k"
-MONGODB_URL = os.getenv("MONGODB_URL") or os.getenv("MONGODB_URI") or (
-    "mongodb+srv://gleicyferreira899_db_user:Q57eSQXyzUoWQxw4@cluster0.xhwrpcd.mongodb.net/"
-    "?retryWrites=true&w=majority&appName=Cluster0"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or "TOKEN DO BOT INDISPONÍVEL"
+MONGODB_URL = os.getenv("MONGODB_URL") or os.getenv("MONGODB_URI") or ("MONGODB INDISPONÍVEL"
 )
 DB_NAME = os.getenv("DB_NAME", "gt_bot")
 
