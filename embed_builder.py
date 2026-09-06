@@ -1,0 +1,977 @@
+# ============================================================
+# EMBED_BUILDER.PY - PAINEL COMPLETO (CORRIGIDO SELECT)
+# ============================================================
+
+import discord
+from discord.ext import commands
+from discord.ui import Button, View, Select, Modal, TextInput
+from discord import ButtonStyle, SelectOption
+from datetime import datetime
+from typing import Optional, List, Dict
+import copy
+import asyncio
+
+from database import get_guild_settings, update_guild_settings
+
+
+# ============================================================
+# MAPAS PADRÃO (STUMBLE GUYS) - EMOJIS NORMATIZADOS
+# ============================================================
+
+STUMBLE_MAPS = [
+    {"name": "Block Dash", "emoji": "🏃"},
+    {"name": "Block Dash Legendary", "emoji": "⭐"},
+    {"name": "Rush Hour", "emoji": "🚗"},
+    {"name": "Laser Tracer", "emoji": "🔫"},
+    {"name": "Laser Dash", "emoji": "⚡"},
+    {"name": "Lava Land", "emoji": "🌋"},
+    {"name": "Bot Bash", "emoji": "🤖"},
+    {"name": "Honey Drop", "emoji": "🍯"},
+    {"name": "Sharkmuda", "emoji": "🦈"},
+    {"name": "The Other Side", "emoji": "🌌"},
+]
+
+# ============================================================
+# PALETA DE CORES DO EMBED
+# ============================================================
+
+PRESET_COLORS = [
+    {"name": "Blurple", "emoji": "🔵", "value": 0x5865F2},
+    {"name": "Verde", "emoji": "🟢", "value": 0x2ECC71},
+    {"name": "Vermelho", "emoji": "🔴", "value": 0xE74C3C},
+    {"name": "Dourado", "emoji": "🟡", "value": 0xF1C40F},
+    {"name": "Roxo", "emoji": "🟣", "value": 0x9B59B6},
+    {"name": "Rosa", "emoji": "🌸", "value": 0xE91E63},
+    {"name": "Laranja", "emoji": "🟠", "value": 0xE67E22},
+    {"name": "Ciano", "emoji": "🩵", "value": 0x1ABC9C},
+    {"name": "Preto", "emoji": "⚫", "value": 0x23272A},
+    {"name": "Branco", "emoji": "⚪", "value": 0xFFFFFF},
+]
+
+
+def _divider() -> str:
+    return "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+
+
+def _hex_str(color: int) -> str:
+    return f"#{color:06X}"
+
+
+# ============================================================
+# MODAL - FORMULÁRIO DE OPÇÃO
+# ============================================================
+
+class OptionModal(Modal):
+    """Modal para adicionar/editar opções"""
+    def __init__(self, panel_view, option_index: Optional[int] = None, current_name: str = "", current_emoji: str = ""):
+        super().__init__(title="✏️ Configurar Opção", timeout=300)
+        self.panel_view = panel_view
+        self.option_index = option_index
+        
+        self.name_input = TextInput(
+            label="📝 Nome da Opção",
+            placeholder="Ex: Block Dash, Arena, Castelo...",
+            default=current_name,
+            style=discord.TextStyle.short,
+            max_length=50,
+            required=True
+        )
+        self.add_item(self.name_input)
+        
+        self.emoji_input = TextInput(
+            label="🎨 Emoji da Opção",
+            placeholder="Ex: 🏰 ou ⭐",
+            default=current_emoji,
+            style=discord.TextStyle.short,
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.emoji_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value.strip()
+        emoji = self.emoji_input.value.strip()
+        
+        if not name or not emoji:
+            return await interaction.response.send_message("❌ Nome e emoji são obrigatórios!", ephemeral=True)
+        
+        if self.option_index is not None:
+            self.panel_view.options[self.option_index] = {"name": name, "emoji": emoji}
+            await interaction.response.send_message(f"✅ Opção **{name}** atualizada!", ephemeral=True)
+        else:
+            self.panel_view.options.append({"name": name, "emoji": emoji})
+            await interaction.response.send_message(f"✅ Opção **{name}** adicionada!", ephemeral=True)
+        
+        await self.panel_view.save_options(interaction.guild.id)
+        await self.panel_view.refresh_main_panel(interaction)
+
+
+# ============================================================
+# MODAL - COR HEX CUSTOMIZADA
+# ============================================================
+
+class HexColorModal(Modal):
+    """Modal para digitar uma cor em hexadecimal"""
+
+    def __init__(self, panel_view):
+        super().__init__(title="🎨 Cor Customizada", timeout=300)
+        self.panel_view = panel_view
+
+        self.hex_input = TextInput(
+            label="Código Hex da cor",
+            placeholder="Ex: #FF5733 ou FF5733",
+            default=_hex_str(panel_view.embed_data.get("color", 0x5865F2)),
+            style=discord.TextStyle.short,
+            max_length=7,
+            required=True
+        )
+        self.add_item(self.hex_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.hex_input.value.strip().lstrip("#")
+
+        if len(raw) != 6 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+            return await interaction.response.send_message(
+                "❌ Cor inválida! Use um hex de 6 dígitos, ex: `#5865F2`.",
+                ephemeral=True
+            )
+
+        color = int(raw, 16)
+        self.panel_view.embed_data["color"] = color
+
+        await interaction.response.defer()
+        embed = self.panel_view.build_final_embed()
+        await interaction.edit_original_response(embed=embed, view=self.panel_view)
+        await interaction.followup.send(f"✅ Cor atualizada para `{_hex_str(color)}`!", ephemeral=True)
+
+
+# ============================================================
+# VIEW - SELETOR DE COR
+# ============================================================
+
+class ColorPickerView(View):
+    """Sub-painel só pra escolher a cor do embed"""
+
+    def __init__(self, parent_view):
+        super().__init__(timeout=180)
+        self.parent_view = parent_view
+
+    def build_embed(self) -> discord.Embed:
+        current = self.parent_view.embed_data.get("color", 0x5865F2)
+        embed = discord.Embed(
+            title="🎨 Escolha a Cor do Embed",
+            description=(
+                f"Cor atual: `{_hex_str(current)}`\n"
+                f"{_divider()}\n"
+                "Selecione uma cor pronta no menu abaixo, ou clique em "
+                "**Cor Customizada** para digitar um hex específico."
+            ),
+            color=current
+        )
+        embed.set_footer(text="Isso afeta apenas a cor da barra lateral do embed")
+        return embed
+
+    @discord.ui.select(
+        placeholder="🎨 Selecione uma cor",
+        min_values=1,
+        max_values=1,
+        options=[
+            SelectOption(label=c["name"], value=str(i), emoji=c["emoji"])
+            for i, c in enumerate(PRESET_COLORS)
+        ]
+    )
+    async def select_color(self, interaction: discord.Interaction, select: Select):
+        color = PRESET_COLORS[int(select.values[0])]["value"]
+        self.parent_view.embed_data["color"] = color
+
+        embed = self.parent_view.build_final_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+        await interaction.followup.send(f"✅ Cor atualizada para `{_hex_str(color)}`!", ephemeral=True)
+
+    @discord.ui.button(label="Cor Customizada (Hex)", style=ButtonStyle.secondary, emoji="🖊️")
+    async def custom_color(self, interaction: discord.Interaction, button: Button):
+        modal = HexColorModal(self.parent_view)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Voltar", style=ButtonStyle.secondary, emoji="🔙")
+    async def back(self, interaction: discord.Interaction, button: Button):
+        embed = self.parent_view.build_final_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
+# ============================================================
+# PAINEL PRINCIPAL - VIEW
+# ============================================================
+
+class EmbedBuilderView(View):
+    """View principal do construtor de embeds"""
+    
+    def __init__(self, bot, embed_data: dict = None, match_type: str = "1v1"):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.match_system = bot.match_system if hasattr(bot, 'match_system') else None
+        
+        self.embed_data = embed_data or {
+            "title": "🏆 Nova Partida",
+            "description": "**Escolha um mapa no menu abaixo para entrar na partida.**\n**Quando encher, a partida é criada automaticamente.**",
+            "thumbnail": None,
+            "color": 0x5865f2,
+            "match_type": "1v1"
+        }
+        
+        self.options = []
+        self.guild_id = None
+        self.channel_id = None
+        self.author_id = None
+        self.current_view = "main"
+        self._loading = False
+        self.message = None
+    
+    def set_context(self, guild_id: str, channel_id: str, author_id: str):
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.author_id = author_id
+        
+        if guild_id:
+            settings = get_guild_settings(guild_id)
+            saved_options = settings.get("ranked", {}).get("maps_options", [])
+            if saved_options:
+                self.options = saved_options
+    
+    async def save_options(self, guild_id: str):
+        if guild_id:
+            update_guild_settings(str(guild_id), "ranked.maps_options", self.options)
+    
+    # ============================================================
+    # BOTÕES - MENU PRINCIPAL
+    # ============================================================
+    
+    @discord.ui.button(label="✏️ Título", style=ButtonStyle.primary, emoji="✏️")
+    async def edit_title(self, interaction: discord.Interaction, button: Button):
+        modal = TitleModal(self, self.embed_data.get("title", ""))
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="📝 Descrição", style=ButtonStyle.primary, emoji="📝")
+    async def edit_description(self, interaction: discord.Interaction, button: Button):
+        modal = DescriptionModal(self, self.embed_data.get("description", ""))
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="🖼️ Thumbnail", style=ButtonStyle.primary, emoji="🖼️")
+    async def edit_thumbnail(self, interaction: discord.Interaction, button: Button):
+        modal = ThumbnailModal(self, self.embed_data.get("thumbnail", ""))
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="🎨 Cor", style=ButtonStyle.primary, emoji="🎨")
+    async def edit_color(self, interaction: discord.Interaction, button: Button):
+        """Abre o seletor de cor do embed"""
+        view = ColorPickerView(self)
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+    @discord.ui.button(label="🗺️ Opções/Mapas", style=ButtonStyle.success, emoji="🗺️")
+    async def open_options(self, interaction: discord.Interaction, button: Button):
+        """Abre o painel de opções/mapas"""
+        if self._loading:
+            return await interaction.response.send_message("⏳ Carregando...", ephemeral=True)
+        
+        self._loading = True
+        try:
+            await interaction.response.defer()
+            
+            embed = self.build_options_embed()
+            view = OptionsPanelView(self)
+            
+            await interaction.edit_original_response(embed=embed, view=view)
+            
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Erro ao abrir opções: {e}", ephemeral=True)
+            except:
+                pass
+        finally:
+            self._loading = False
+    
+    # ============================================================
+    # SELECT - MODO DE JOGO
+    # ============================================================
+    
+    @discord.ui.select(
+        placeholder="🎮 Selecione o modo de jogo",
+        min_values=1,
+        max_values=1,
+        options=[
+            SelectOption(label="⚔️ 1v1", value="1v1", description="Duelo individual", emoji="⚔️"),
+            SelectOption(label="👥 2v2", value="2v2", description="Duplas", emoji="👥"),
+            SelectOption(label="👨‍👩‍👦 3v3", value="3v3", description="Times completos", emoji="👨‍👩‍👦"),
+            SelectOption(label="👨‍👩‍👧‍👦 4v4", value="4v4", description="Times grandes", emoji="👨‍👩‍👧‍👦"),
+        ]
+    )
+    async def select_mode(self, interaction: discord.Interaction, select: Select):
+        self.embed_data["match_type"] = select.values[0]
+        embed = self.build_final_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(f"✅ Modo alterado para: **{select.values[0]}**", ephemeral=True)
+    
+    # ============================================================
+    # BOTÕES - AÇÕES FINAIS
+    # ============================================================
+    
+    @discord.ui.button(label="📤 Publicar", style=ButtonStyle.success, emoji="📤")
+    async def publish(self, interaction: discord.Interaction, button: Button):
+        """PUBLICA — mensagem final enxuta: só título, descrição e opções
+        (sem cor em hex e sem contagem de 'mapas configurados')."""
+        match_type = self.embed_data.get("match_type", "1v1")
+        view = QueuePublishView(
+            bot=self.bot,
+            match_system=self.match_system,
+            guild_id=str(interaction.guild.id),
+            channel_id=str(interaction.channel.id),
+            match_type=match_type,
+            options=copy.deepcopy(self.options),
+            embed_data=copy.deepcopy(self.embed_data),
+        )
+        view.update_select_options()
+        embed = view.build_publish_embed()
+
+        msg = await interaction.channel.send(embed=embed, view=view)
+        view.message = msg
+        await interaction.response.send_message("✅ Partida publicada com sucesso!", ephemeral=True)
+    
+    @discord.ui.button(label="👁️ Preview", style=ButtonStyle.secondary, emoji="👁️")
+    async def preview(self, interaction: discord.Interaction, button: Button):
+        """PREVIEW - mostra como vai ficar"""
+        embed = self.build_final_embed()
+        await interaction.response.send_message("👁️ **Preview da partida:**", ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label="❌ Cancelar", style=ButtonStyle.danger, emoji="❌")
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        embed = discord.Embed(
+            title="❌ Cancelado",
+            description="Criação cancelada!",
+            color=0xff0000
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    # ============================================================
+    # MÉTODOS DE REFRESH
+    # ============================================================
+    
+    async def refresh_main_panel(self, interaction: discord.Interaction):
+        """Recria o painel principal após alterações"""
+        embed = self.build_final_embed()
+        new_view = EmbedBuilderView(self.bot, self.embed_data)
+        new_view.options = self.options
+        new_view.guild_id = self.guild_id
+        new_view.channel_id = self.channel_id
+        new_view.author_id = self.author_id
+        
+        try:
+            await interaction.edit_original_response(embed=embed, view=new_view)
+        except:
+            try:
+                await interaction.response.edit_message(embed=embed, view=new_view)
+            except:
+                pass
+    
+    # ============================================================
+    # MÉTODOS DO EMBED - VERSÃO FINAL
+    # ============================================================
+    
+    def build_final_embed(self) -> discord.Embed:
+        """Constrói o embed FINAL (o que vai ser publicado)"""
+        color = self.embed_data.get("color", 0x5865f2)
+        match_type = self.embed_data.get("match_type", "1v1")
+
+        embed = discord.Embed(
+            title=self.embed_data.get("title", "🏆 Nova Partida"),
+            description=(
+                f"{self.embed_data.get('description', 'Escolha um mapa no menu abaixo para entrar na partida.')}\n"
+                f"{_divider()}"
+            ),
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+
+        if self.embed_data.get("thumbnail"):
+            embed.set_thumbnail(url=self.embed_data["thumbnail"])
+
+        embed.add_field(name="🎮 Modo", value=f"**{match_type}**", inline=True)
+        embed.add_field(name="🎨 Cor", value=f"`{_hex_str(color)}`", inline=True)
+        embed.add_field(name="🗺️ Mapas", value=f"**{len(self.options)}** configurados", inline=True)
+
+        if self.options:
+            options_text = [
+                f"{opt.get('emoji', '📌')} `{opt.get('name', f'Opção {i}')}`"
+                for i, opt in enumerate(self.options[:10], 1)
+            ]
+            embed.add_field(
+                name="🗺️ Mapas Disponíveis",
+                value="\n".join(options_text),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🗺️ Mapas Disponíveis",
+                value="*Nenhum mapa configurado — use o botão 🗺️ Opções/Mapas*",
+                inline=False
+            )
+
+        bot_name = self.bot.user.name if self.bot.user else "GT Ranked"
+        bot_icon = self.bot.user.display_avatar.url if self.bot.user else discord.Embed.Empty
+        embed.set_footer(text=f"{bot_name} • Partida {match_type}", icon_url=bot_icon)
+
+        return embed
+
+    def build_options_embed(self) -> discord.Embed:
+        """Constrói o embed do painel de opções"""
+        color = self.embed_data.get("color", 0x5865f2)
+        embed = discord.Embed(
+            title="🗺️ Opções / Mapas",
+            description=(
+                "Cada opção precisa de **nome + emoji** para ficar bonita no painel.\n"
+                f"{_divider()}"
+            ),
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+
+        if self.options:
+            options_text = [
+                f"`{i}.` {opt.get('emoji', '📌')} **{opt.get('name', f'Opção {i}')}**"
+                for i, opt in enumerate(self.options, 1)
+            ]
+            embed.add_field(
+                name=f"📋 Opções Configuradas ({len(self.options)}/25)",
+                value="\n".join(options_text[:25]),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📋 Opções Configuradas (0/25)",
+                value="*Nenhuma opção adicionada ainda*",
+                inline=False
+            )
+
+        bot_name = self.bot.user.name if self.bot.user else "GT Ranked"
+        embed.set_footer(text=f"{bot_name} • Gerenciamento de Mapas")
+
+        return embed
+
+
+# ============================================================
+# VIEW - PUBLISH (FILA REAL POR MAPA, 100% FUNCIONAL)
+# ============================================================
+
+class QueuePublishView(View):
+    """View da mensagem publicada. Cada opção/mapa tem sua própria fila —
+    o jogador escolhe o mapa no select para entrar, e a mensagem mostra
+    ao vivo quantos jogadores já estão na fila de cada mapa. Quando uma
+    fila enche, o sistema de partidas assume (time / 1v1) automaticamente
+    e essa fila específica volta a zero, podendo receber novos jogadores
+    imediatamente — várias filas rodam em paralelo sem se atrapalhar."""
+
+    def __init__(self, bot, match_system, guild_id: str, channel_id: str, match_type: str, options: List[dict], embed_data: dict):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.match_system = match_system
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.match_type = match_type
+        self.options = options or []
+        self.embed_data = embed_data or {}
+        self.message: Optional[discord.Message] = None
+        self._refresh_pending = False
+
+    def update_select_options(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                opts = []
+                if self.options:
+                    for opt in self.options[:25]:
+                        opts.append(SelectOption(
+                            label=opt.get("name", "Mapa")[:45],
+                            value=opt.get("name", "Mapa"),
+                            emoji=opt.get("emoji", "🗺️")
+                        ))
+                else:
+                    opts.append(SelectOption(label="Nenhum mapa disponível", value="none", emoji="❌"))
+                child.options = opts
+                child.placeholder = "🗺️ Selecione um mapa para entrar na fila"
+
+    def build_publish_embed(self) -> discord.Embed:
+        """Mensagem final: só título, descrição e as opções (com a fila de
+        cada uma) — sem hex da cor e sem 'mapas configurados'."""
+        color = self.embed_data.get("color", 0x5865f2)
+        embed = discord.Embed(
+            title=self.embed_data.get("title", "🏆 Nova Partida"),
+            description=(
+                f"{self.embed_data.get('description', 'Escolha um mapa no menu abaixo para entrar na fila.')}\n"
+                f"{_divider()}"
+            ),
+            color=color,
+            timestamp=datetime.utcnow(),
+        )
+
+        if self.embed_data.get("thumbnail"):
+            embed.set_thumbnail(url=self.embed_data["thumbnail"])
+
+        if self.options and self.match_system:
+            lines = []
+            for opt in self.options[:25]:
+                name = opt.get("name", "Mapa")
+                emoji = opt.get("emoji", "🗺️")
+                status = self.match_system.get_queue_status(self.guild_id, self.channel_id, self.match_type, name)
+                lines.append(f"{emoji} **{name}** — `{status['count']}/{status['max']}` na fila")
+            embed.add_field(name="🗺️ Opções", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="🗺️ Opções", value="*Nenhuma opção configurada*", inline=False)
+
+        bot_name = self.bot.user.name if self.bot and self.bot.user else "GT Ranked"
+        bot_icon = self.bot.user.display_avatar.url if self.bot and self.bot.user else discord.Embed.Empty
+        embed.set_footer(text=f"{bot_name} • Partida {self.match_type}", icon_url=bot_icon)
+        return embed
+
+    async def _refresh(self, interaction: Optional[discord.Interaction] = None):
+        """Atualiza o embed publicado. Usa debounce: se vários jogadores
+        clicarem quase ao mesmo tempo (fila bombando), só faz UMA edição
+        de mensagem em vez de uma por clique — poupa muito em Railway free,
+        onde CPU/rate-limit do Discord é o gargalo real."""
+        if self._refresh_pending:
+            return
+        self._refresh_pending = True
+
+        async def _do():
+            await asyncio.sleep(0.7)
+            self._refresh_pending = False
+            if not self.message:
+                return
+            try:
+                await self.message.edit(embed=self.build_publish_embed(), view=self)
+            except Exception:
+                pass
+
+        asyncio.create_task(_do())
+
+    @discord.ui.select(
+        placeholder="🗺️ Selecione um mapa para entrar na fila",
+        min_values=1,
+        max_values=1,
+        options=[]
+    )
+    async def select_map(self, interaction: discord.Interaction, select: Select):
+        if not self.match_system:
+            return await interaction.response.send_message("❌ Sistema de partidas indisponível no momento.", ephemeral=True)
+
+        if not await self.match_system.check_rate_limit(f"queue:{interaction.user.id}", max_per_second=3):
+            return await interaction.response.send_message("⏳ Devagar! Espere um segundo antes de tentar de novo.", ephemeral=True)
+
+        if select.values[0] == "none":
+            return await interaction.response.send_message("❌ Nenhum mapa disponível!", ephemeral=True)
+
+        map_name = select.values[0]
+        result = await self.match_system.join_queue(
+            guild_id=self.guild_id,
+            channel_id=self.channel_id,
+            match_type=self.match_type,
+            map_name=map_name,
+            user_id=interaction.user.id,
+        )
+
+        if result.get("error"):
+            return await interaction.response.send_message(result["error"], ephemeral=True)
+
+        if result.get("popped"):
+            await interaction.response.send_message(
+                f"✅ Fila de **{map_name}** completou! Sua partida está sendo criada — fique de olho no canal.",
+                ephemeral=True
+            )
+            await self._refresh(None)
+        else:
+            await interaction.response.send_message(
+                f"✅ Você entrou na fila de **{map_name}**! (`{result['count']}/{result['max']}`)",
+                ephemeral=True
+            )
+            await self._refresh(None)
+
+    @discord.ui.button(label="🚪 Sair da Fila", style=ButtonStyle.danger, emoji="🚪")
+    async def leave_button(self, interaction: discord.Interaction, button: Button):
+        if not self.match_system:
+            return await interaction.response.send_message("❌ Sistema de partidas indisponível no momento.", ephemeral=True)
+
+        if not await self.match_system.check_rate_limit(f"queue:{interaction.user.id}", max_per_second=3):
+            return await interaction.response.send_message("⏳ Devagar! Espere um segundo antes de tentar de novo.", ephemeral=True)
+
+        pkey = f"{self.guild_id}:{interaction.user.id}"
+        key = self.match_system.queued_players.get(pkey)
+        if not key or not key.startswith(f"{self.guild_id}:{self.channel_id}:{self.match_type}:"):
+            return await interaction.response.send_message("❌ Você não está em nenhuma fila desse painel.", ephemeral=True)
+
+        map_name = key.split(":", 3)[3]
+        result = await self.match_system.leave_queue(
+            guild_id=self.guild_id,
+            channel_id=self.channel_id,
+            match_type=self.match_type,
+            map_name=map_name,
+            user_id=interaction.user.id,
+        )
+        if result.get("error"):
+            return await interaction.response.send_message(result["error"], ephemeral=True)
+
+        await interaction.response.send_message(f"🚪 Você saiu da fila de **{map_name}**.", ephemeral=True)
+        await self._refresh(None)
+
+
+# ============================================================
+# PAINEL DE OPÇÕES - VIEW (COM SELECT CORRIGIDO)
+# ============================================================
+
+class OptionsPanelView(View):
+    """View do painel de opções/mapas"""
+    
+    def __init__(self, parent_view: EmbedBuilderView):
+        super().__init__(timeout=600)
+        self.parent_view = parent_view
+        self._loading = False
+        self._update_select_options()  # Inicializa o select
+    
+    def _update_select_options(self):
+        """Atualiza as opções do select - CHAMADO NA INICIALIZAÇÃO"""
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                options = []
+                
+                # SEMPRE adiciona pelo menos uma opção
+                if self.parent_view.options:
+                    for i, opt in enumerate(self.parent_view.options):
+                        name = opt.get("name", f"Opção {i+1}")
+                        emoji = opt.get("emoji", "📌")
+                        options.append(
+                            SelectOption(
+                                label=f"{name[:45]}",
+                                value=str(i),
+                                emoji=emoji[:10] if emoji else None
+                            )
+                        )
+                        if len(options) >= 25:
+                            break
+                else:
+                    # Opção padrão quando não há opções
+                    options.append(
+                        SelectOption(
+                            label="Nenhuma opção disponível",
+                            value="none",
+                            emoji="❌"
+                        )
+                    )
+                
+                child.options = options
+                child.placeholder = "📋 Selecione uma opção para editar/remover"
+    
+    # ============================================================
+    # BOTÃO - MAPAS STUMBLE
+    # ============================================================
+    
+    @discord.ui.button(label="🎲 Mapas Stumble", style=ButtonStyle.primary, emoji="🎲")
+    async def add_stumble_maps(self, interaction: discord.Interaction, button: Button):
+        """Adiciona os mapas do Stumble Guys"""
+        if self._loading:
+            return await interaction.response.send_message("⏳ Carregando...", ephemeral=True)
+        
+        self._loading = True
+        try:
+            await interaction.response.defer()
+            
+            self.parent_view.options = copy.deepcopy(STUMBLE_MAPS)
+            await self.parent_view.save_options(interaction.guild.id)
+            
+            embed = self.parent_view.build_options_embed()
+            new_view = OptionsPanelView(self.parent_view)
+            await interaction.edit_original_response(embed=embed, view=new_view)
+            await interaction.followup.send(f"✅ {len(STUMBLE_MAPS)} mapas do Stumble Guys adicionados!", ephemeral=True)
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Erro: {e}", ephemeral=True)
+            except:
+                pass
+        finally:
+            self._loading = False
+    
+    # ============================================================
+    # BOTÃO - ADICIONAR OPÇÃO
+    # ============================================================
+    
+    @discord.ui.button(label="➕ Adicionar Opção", style=ButtonStyle.success, emoji="➕")
+    async def add_option(self, interaction: discord.Interaction, button: Button):
+        modal = OptionModal(self.parent_view)
+        await interaction.response.send_modal(modal)
+    
+    # ============================================================
+    # SELECT - EDITAR/REMOVER OPÇÃO
+    # ============================================================
+    
+    @discord.ui.select(
+        placeholder="📋 Selecione uma opção para editar/remover",
+        min_values=1,
+        max_values=1,
+        options=[
+            SelectOption(
+                label="Nenhuma opção disponível",
+                value="none",
+                emoji="❌"
+            )
+        ]  # Opção padrão - será atualizada no __init__
+    )
+    async def select_option(self, interaction: discord.Interaction, select: Select):
+        if not select.values or select.values[0] == "none":
+            return await interaction.response.send_message("❌ Selecione uma opção válida!", ephemeral=True)
+        
+        index = int(select.values[0])
+        if index >= len(self.parent_view.options):
+            return await interaction.response.send_message("❌ Opção não encontrada!", ephemeral=True)
+        
+        option = self.parent_view.options[index]
+        
+        modal = OptionActionModal(
+            self.parent_view,
+            index,
+            option.get("name", ""),
+            option.get("emoji", "")
+        )
+        await interaction.response.send_modal(modal)
+    
+    # ============================================================
+    # BOTÃO - LIMPAR TUDO
+    # ============================================================
+    
+    @discord.ui.button(label="🧹 Limpar Tudo", style=ButtonStyle.danger, emoji="🧹")
+    async def clear_all(self, interaction: discord.Interaction, button: Button):
+        self.parent_view.options = []
+        await self.parent_view.save_options(interaction.guild.id)
+        
+        await interaction.response.defer()
+        
+        embed = self.parent_view.build_options_embed()
+        new_view = OptionsPanelView(self.parent_view)
+        await interaction.edit_original_response(embed=embed, view=new_view)
+        await interaction.followup.send("🧹 Todas as opções removidas!", ephemeral=True)
+    
+    # ============================================================
+    # BOTÃO - VOLTAR
+    # ============================================================
+    
+    @discord.ui.button(label="🔙 Voltar", style=ButtonStyle.secondary, emoji="🔙")
+    async def back_to_main(self, interaction: discord.Interaction, button: Button):
+        """Volta para o menu principal"""
+        await interaction.response.defer()
+        
+        embed = self.parent_view.build_final_embed()
+        new_view = EmbedBuilderView(self.parent_view.bot, self.parent_view.embed_data)
+        new_view.options = self.parent_view.options
+        new_view.guild_id = self.parent_view.guild_id
+        new_view.channel_id = self.parent_view.channel_id
+        new_view.author_id = self.parent_view.author_id
+        
+        await interaction.edit_original_response(embed=embed, view=new_view)
+
+
+# ============================================================
+# MODAL - AÇÃO DA OPÇÃO
+# ============================================================
+
+class OptionActionModal(Modal):
+    """Modal para editar ou remover uma opção"""
+    
+    def __init__(self, parent_view, option_index: int, current_name: str, current_emoji: str):
+        super().__init__(title="⚙️ Ação da Opção", timeout=300)
+        self.parent_view = parent_view
+        self.option_index = option_index
+        
+        self.name_input = TextInput(
+            label="📝 Nome da Opção",
+            default=current_name,
+            style=discord.TextStyle.short,
+            max_length=50,
+            required=True
+        )
+        self.add_item(self.name_input)
+        
+        self.emoji_input = TextInput(
+            label="🎨 Emoji da Opção",
+            default=current_emoji,
+            style=discord.TextStyle.short,
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.emoji_input)
+        
+        self.action_input = TextInput(
+            label="⚙️ Ação (digite 'salvar' ou 'remover')",
+            placeholder="salvar / remover",
+            style=discord.TextStyle.short,
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.action_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        action = self.action_input.value.lower().strip()
+        name = self.name_input.value.strip()
+        emoji = self.emoji_input.value.strip()
+        
+        if action == "salvar":
+            self.parent_view.options[self.option_index] = {"name": name, "emoji": emoji}
+            await self.parent_view.save_options(interaction.guild.id)
+            
+            await interaction.response.defer()
+            
+            embed = self.parent_view.build_options_embed()
+            new_view = OptionsPanelView(self.parent_view)
+            await interaction.edit_original_response(embed=embed, view=new_view)
+            await interaction.followup.send(f"✅ Opção **{name}** salva!", ephemeral=True)
+            
+        elif action == "remover":
+            removed = self.parent_view.options.pop(self.option_index)
+            await self.parent_view.save_options(interaction.guild.id)
+            
+            await interaction.response.defer()
+            
+            embed = self.parent_view.build_options_embed()
+            new_view = OptionsPanelView(self.parent_view)
+            await interaction.edit_original_response(embed=embed, view=new_view)
+            await interaction.followup.send(f"🗑️ Opção **{removed.get('name')}** removida!", ephemeral=True)
+            
+        else:
+            await interaction.response.send_message("❌ Ação inválida! Use 'salvar' ou 'remover'", ephemeral=True)
+
+
+# ============================================================
+# MODAIS - TÍTULO, DESCRIÇÃO, THUMBNAIL
+# ============================================================
+
+class TitleModal(Modal):
+    def __init__(self, builder, current_title: str = ""):
+        super().__init__(title="✏️ Editar Título", timeout=300)
+        self.builder = builder
+        
+        self.title_input = TextInput(
+            label="Título do Embed",
+            placeholder="Ex: 🏆 Partida Ranked",
+            default=current_title,
+            style=discord.TextStyle.short,
+            max_length=256,
+            required=True
+        )
+        self.add_item(self.title_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_data["title"] = self.title_input.value
+        
+        await interaction.response.defer()
+        embed = self.builder.build_final_embed()
+        await interaction.edit_original_response(embed=embed, view=self.builder)
+        await interaction.followup.send(f"✅ Título atualizado para: **{self.title_input.value}**", ephemeral=True)
+
+
+class DescriptionModal(Modal):
+    def __init__(self, builder, current_desc: str = ""):
+        super().__init__(title="✏️ Editar Descrição", timeout=300)
+        self.builder = builder
+        
+        self.desc_input = TextInput(
+            label="Descrição do Embed",
+            placeholder="Ex: Escolha um mapa no menu abaixo...",
+            default=current_desc,
+            style=discord.TextStyle.paragraph,
+            max_length=2000,
+            required=True
+        )
+        self.add_item(self.desc_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_data["description"] = self.desc_input.value
+        
+        await interaction.response.defer()
+        embed = self.builder.build_final_embed()
+        await interaction.edit_original_response(embed=embed, view=self.builder)
+        await interaction.followup.send(f"✅ Descrição atualizada!", ephemeral=True)
+
+
+class ThumbnailModal(Modal):
+    def __init__(self, builder, current_url: str = ""):
+        super().__init__(title="🖼️ Editar Thumbnail", timeout=300)
+        self.builder = builder
+        
+        self.url_input = TextInput(
+            label="URL da Imagem",
+            placeholder="https://exemplo.com/imagem.png",
+            default=current_url,
+            style=discord.TextStyle.short,
+            max_length=500,
+            required=False
+        )
+        self.add_item(self.url_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.builder.embed_data["thumbnail"] = self.url_input.value if self.url_input.value else None
+        
+        await interaction.response.defer()
+        embed = self.builder.build_final_embed()
+        await interaction.edit_original_response(embed=embed, view=self.builder)
+        await interaction.followup.send(f"✅ Thumbnail atualizada!" if self.url_input.value else "✅ Thumbnail removida!", ephemeral=True)
+
+
+# ============================================================
+# COMANDO - CRIAR PAINEL
+# ============================================================
+
+def setup_embed_builder(bot):
+    """Configura os comandos do painel"""
+    
+    @bot.command(name="embed")
+    @commands.has_permissions(administrator=True)
+    async def embed_cmd(ctx):
+        """Cria o painel de construção de embeds"""
+        view = EmbedBuilderView(bot)
+        view.set_context(str(ctx.guild.id), str(ctx.channel.id), str(ctx.author.id))
+        
+        embed = view.build_final_embed()
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
+    
+    @bot.command(name="painel")
+    async def painel_cmd(ctx):
+        """Cria o painel de partidas interativo"""
+        view = EmbedBuilderView(bot)
+        view.set_context(str(ctx.guild.id), str(ctx.channel.id), str(ctx.author.id))
+        
+        embed = discord.Embed(
+            title="🎫 Painel de Partidas",
+            description=(
+                "Configure cada detalhe da sua partida antes de publicar.\n"
+                f"{_divider()}"
+            ),
+            color=view.embed_data.get("color", 0x5865F2),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(
+            name="📋 Como usar",
+            value=(
+                "`✏️` **Título** — Altere o título\n"
+                "`📝` **Descrição** — Altere a descrição\n"
+                "`🖼️` **Thumbnail** — Adicione uma imagem\n"
+                "`🎨` **Cor** — Escolha a cor do embed\n"
+                "`🗺️` **Opções/Mapas** — Adicione mapas\n"
+                "`🎮` **Modo** — Selecione 1v1, 2v2, 3v3, 4v4\n"
+                "`📤` **Publicar** — Envia a partida"
+            ),
+            inline=False
+        )
+        bot_name = bot.user.name if bot.user else "GT Ranked"
+        bot_icon = bot.user.display_avatar.url if bot.user else discord.Embed.Empty
+        embed.set_footer(text=f"{bot_name} • Sistema de Partidas", icon_url=bot_icon)
+        
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
