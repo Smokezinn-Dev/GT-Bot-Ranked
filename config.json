@@ -1,0 +1,14 @@
+{
+  "emojis": [
+    {"name": "blockdash", "file": "blockdash.png", "emoji": "🏃", "map_name": "Block Dash"},
+    {"name": "blockdash_legendary", "file": "blockdash_legendary.png", "emoji": "⭐", "map_name": "Block Dash Legendary"},
+    {"name": "rush_hour", "file": "rush_hour.png", "emoji": "🚗", "map_name": "Rush Hour"},
+    {"name": "laser_tracer", "file": "laser_tracer.png", "emoji": "🔫", "map_name": "Laser Tracer"},
+    {"name": "laser_dash", "file": "laser_dash.png", "emoji": "⚡", "map_name": "Laser Dash"},
+    {"name": "lava_land", "file": "lava_land.png", "emoji": "🌋", "map_name": "Lava Land"},
+    {"name": "bot_bash", "file": "bot_bash.png", "emoji": "🤖", "map_name": "Bot Bash"},
+    {"name": "honey_drop", "file": "honey_drop.png", "emoji": "🍯", "map_name": "Honey Drop"},
+    {"name": "sharkmuda", "file": "sharkmuda.png", "emoji": "🦈", "map_name": "Sharkmuda"},
+    {"name": "the_other_side", "file": "the_other_side.png", "emoji": "🌌", "map_name": "The Other Side"}
+  ]
+}
