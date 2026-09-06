@@ -1,5 +1,5 @@
 # ============================================================
-# EMBED_BUILDER.PY - PAINEL MODERNO v5.4 (ORDEM CORRIGIDA)
+# EMBED_BUILDER.PY - PAINEL MODERNO v5.5
 # ============================================================
 
 import discord
@@ -7,7 +7,7 @@ from discord.ext import commands
 from discord.ui import Button, View, Select, Modal, TextInput
 from discord import ButtonStyle, SelectOption
 from datetime import datetime
-from typing import Optional, List, Dict, Tuple, TYPE_CHECKING
+from typing import Optional, List, Dict, Tuple
 import copy
 import asyncio
 import re
@@ -18,10 +18,6 @@ import time
 from urllib.parse import urlparse, unquote, quote
 
 from database import get_guild_settings, update_guild_settings
-
-# Para evitar importação circular com type hints
-if TYPE_CHECKING:
-    from .embed_builder import EmbedBuilderView
 
 
 # ============================================================
@@ -164,6 +160,185 @@ def is_valid_image_url_quick(url: str) -> bool:
             return True
     
     return False
+
+
+# ============================================================
+# EXTRATOR PINTEREST
+# ============================================================
+
+class PinterestImageExtractor:
+    """Extrator específico para Pinterest com múltiplos métodos"""
+    
+    @classmethod
+    async def extract_pinterest_image(cls, url: str, timeout: int = 10) -> Optional[str]:
+        """Tenta extrair imagem do Pinterest por vários métodos"""
+        
+        # MÉTODO 1: Tentar com headers que imitam navegador
+        try:
+            timeout_obj = aiohttp.ClientTimeout(total=timeout)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            }
+            
+            async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+                async with session.get(url, headers=headers, allow_redirects=True) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        
+                        # Procurar em metadados
+                        image_url = cls._extract_from_metadata(html)
+                        if image_url and 'pinimg.com' in image_url:
+                            return image_url
+                        
+                        # Procurar em JSON-LD
+                        image_url = cls._extract_from_json_ld(html)
+                        if image_url and 'pinimg.com' in image_url:
+                            return image_url
+                        
+                        # Procurar em URLs de imagem no HTML
+                        image_url = cls._extract_image_urls(html)
+                        if image_url and 'pinimg.com' in image_url:
+                            return image_url
+        except Exception:
+            pass
+        
+        # MÉTODO 2: Extrair ID e tentar construir URL
+        pin_id = cls._extract_pin_id(url)
+        if pin_id:
+            # Tentar diferentes padrões de URL
+            patterns = [
+                f'https://i.pinimg.com/originals/{pin_id[:2]}/{pin_id[2:4]}/{pin_id[4:6]}/{pin_id}.jpg',
+                f'https://i.pinimg.com/564x/{pin_id[:2]}/{pin_id[2:4]}/{pin_id[4:6]}/{pin_id}.jpg',
+                f'https://i.pinimg.com/736x/{pin_id[:2]}/{pin_id[2:4]}/{pin_id[4:6]}/{pin_id}.jpg',
+                f'https://i.pinimg.com/474x/{pin_id[:2]}/{pin_id[2:4]}/{pin_id[4:6]}/{pin_id}.jpg',
+                f'https://i.pinimg.com/236x/{pin_id[:2]}/{pin_id[2:4]}/{pin_id[4:6]}/{pin_id}.jpg',
+            ]
+            
+            for pattern in patterns:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.head(pattern, allow_redirects=True) as response:
+                            if response.status == 200:
+                                content_type = response.headers.get('Content-Type', '')
+                                if 'image' in content_type:
+                                    return pattern
+                except:
+                    continue
+        
+        # MÉTODO 3: Usar oembed do Pinterest (API pública)
+        try:
+            pin_id = cls._extract_pin_id(url)
+            if pin_id:
+                oembed_url = f'https://www.pinterest.com/oembed?url=https://br.pinterest.com/pin/{pin_id}/'
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(oembed_url) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if 'thumbnail_url' in data:
+                                return data['thumbnail_url']
+                            if 'url' in data and 'pinimg.com' in data['url']:
+                                return data['url']
+        except:
+            pass
+        
+        return None
+    
+    @classmethod
+    def _extract_from_metadata(cls, html: str) -> Optional[str]:
+        """Extrai imagem dos metadados do HTML"""
+        patterns = [
+            r'<meta property="og:image" content="([^"]+)"',
+            r'<meta name="twitter:image" content="([^"]+)"',
+            r'<meta property="og:image:secure_url" content="([^"]+)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                url = match.group(1)
+                if 'pinimg.com' in url:
+                    return url
+        return None
+    
+    @classmethod
+    def _extract_from_json_ld(cls, html: str) -> Optional[str]:
+        """Extrai imagem de JSON-LD"""
+        json_pattern = r'<script type="application/ld\+json">(.*?)</script>'
+        for match in re.finditer(json_pattern, html, re.DOTALL | re.IGNORECASE):
+            try:
+                data = json.loads(match.group(1))
+                if isinstance(data, dict):
+                    # Procurar em vários lugares
+                    if 'image' in data:
+                        img = data['image']
+                        if isinstance(img, str) and 'pinimg.com' in img:
+                            return img
+                        if isinstance(img, dict) and 'url' in img:
+                            url = img['url']
+                            if 'pinimg.com' in url:
+                                return url
+                        if isinstance(img, list) and img:
+                            first = img[0]
+                            if isinstance(first, str) and 'pinimg.com' in first:
+                                return first
+                            if isinstance(first, dict) and 'url' in first:
+                                url = first['url']
+                                if 'pinimg.com' in url:
+                                    return url
+                    
+                    if 'thumbnail' in data:
+                        thumb = data['thumbnail']
+                        if isinstance(thumb, str) and 'pinimg.com' in thumb:
+                            return thumb
+                    
+                    if 'images' in data:
+                        images = data['images']
+                        if isinstance(images, list) and images:
+                            first = images[0]
+                            if isinstance(first, str) and 'pinimg.com' in first:
+                                return first
+            except:
+                pass
+        return None
+    
+    @classmethod
+    def _extract_image_urls(cls, html: str) -> Optional[str]:
+        """Extrai URLs de imagem do HTML"""
+        # Procurar por imagens com src
+        img_patterns = [
+            r'<img[^>]+src="([^"]+)"',
+            r"<img[^>]+src='([^']+)'",
+        ]
+        for pattern in img_patterns:
+            matches = re.finditer(pattern, html, re.IGNORECASE)
+            for match in matches:
+                url = match.group(1)
+                if 'pinimg.com' in url and not url.startswith('data:'):
+                    return url
+        return None
+    
+    @classmethod
+    def _extract_pin_id(cls, url: str) -> Optional[str]:
+        """Extrai o ID do pin da URL"""
+        patterns = [
+            r'/pin/(\d+)/',
+            r'/pin/(\d+)$',
+            r'pin\.it/([a-zA-Z0-9]+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
 
 
 # ============================================================
@@ -363,7 +538,7 @@ class UniversalImageExtractor:
     @classmethod
     async def extract_image_url(cls, url: str, timeout: int = 10) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Extrai a URL da imagem de QUALQUER URL
+        Extrai a URL da imagem de QUALQUER URL - COM PINTEREST FIX
         Retorna: (sucesso, url_imagem, mensagem_erro)
         """
         if not url:
@@ -379,6 +554,26 @@ class UniversalImageExtractor:
                 image_url = cache_data.get('image_url')
                 if image_url:
                     return True, image_url, None
+        
+        # 🔥 FIX: Se for Pinterest, usar o extrator específico
+        if 'pinterest.com/pin/' in url.lower() or 'pin.it/' in url.lower():
+            image_url = await PinterestImageExtractor.extract_pinterest_image(url, timeout)
+            if image_url:
+                service_name = cls._detect_service(url).get('name', 'Pinterest')
+                cls._cache[cache_key] = {'image_url': image_url, 'timestamp': time.time(), 'service': service_name}
+                return True, image_url, None
+            else:
+                return False, None, (
+                    "❌ Não foi possível extrair a imagem do **Pinterest**.\n\n"
+                    "**Solução rápida:**\n"
+                    "1. Abra o pin no Pinterest\n"
+                    "2. Clique com o botão DIREITO na imagem\n"
+                    "3. Selecione 'Abrir imagem em nova guia'\n"
+                    "4. Copie a URL (termina com .jpg ou .png)\n"
+                    "5. Cole aqui!\n\n"
+                    "**Exemplo de URL que funciona:**\n"
+                    "`https://i.pinimg.com/originals/xx/xx/xx/xxxxx.jpg`"
+                )
         
         # Detectar serviço
         service_info = cls._detect_service(url)
@@ -840,7 +1035,7 @@ class HexColorModal(Modal):
 
 
 # ============================================================
-# VIEW - PUBLISH (AGORA ANTES DA VIEW PRINCIPAL)
+# VIEW - PUBLISH
 # ============================================================
 
 class QueuePublishView(View):
@@ -1162,7 +1357,7 @@ class OptionsPanelView(View):
 
 
 # ============================================================
-# VIEW PRINCIPAL - EMBED BUILDER (DEFINIDA POR ÚLTIMO)
+# VIEW PRINCIPAL - EMBED BUILDER
 # ============================================================
 
 class EmbedBuilderView(View):
