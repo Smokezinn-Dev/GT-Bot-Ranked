@@ -25,7 +25,7 @@ MONGODB_URL = os.getenv(
     "MONGODB_URL",
     os.getenv(
         "MONGODB_URI",
-        "mongodb+srv://gleicyferreira899_db_user:Q57eSQXyzUoWQxw4@cluster0.xhwrpcd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+        "TOKEN N DISPONÍVEL"
     )
 )
 DB_NAME = os.getenv("DB_NAME", "gt_bot")
